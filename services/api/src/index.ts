@@ -599,7 +599,7 @@ function registerProjectLifecycleTools(
     {
       name: z.string().min(1).max(256).optional(),
     },
-    async ({ name }) => {
+    async ({ name }: { name?: string }) => {
       const project = await createProject({ name });
       return {
         content: [
@@ -621,7 +621,7 @@ function registerProjectLifecycleTools(
     {
       projectId: z.string().regex(/^prj_[A-Za-z0-9_-]{8,64}$/),
     },
-    async ({ projectId }) => {
+    async ({ projectId }: { projectId: string }) => {
       const project = await loadProject(projectId);
       return {
         content: [
@@ -648,7 +648,7 @@ function registerProjectLifecycleTools(
     {
       projectId: z.string().regex(/^prj_[A-Za-z0-9_-]{8,64}$/),
     },
-    async ({ projectId }) => {
+    async ({ projectId }: { projectId: string }) => {
       const result = await deleteProject(projectId);
       return {
         content: [
