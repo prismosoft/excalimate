@@ -875,7 +875,15 @@ async function enqueueRender(
     };
   }
 
-  await boss.send(RENDER_QUEUE, { renderId });
+  try {
+    await boss.send(RENDER_QUEUE, { renderId });
+  } catch (error) {
+    await pool.query(
+      `delete from excalimate_renders where id = $1`,
+      [renderId],
+    ).catch(() => undefined);
+    throw error;
+  }
 
   return {
     id: renderId,
