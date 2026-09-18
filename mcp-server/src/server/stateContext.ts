@@ -24,6 +24,12 @@ export type StateSnapshot = McpStateSnapshot;
 
 export interface StateContextOptions {
   resourceLimits?: Partial<ResourceLimits>;
+  /** Canonical project loaded by a stateless/cloud host before the MCP request. */
+  initialState?: ServerState;
+  initialRevision?: number;
+  initialSequence?: number;
+  /** Called after a successful mutation and before it is exposed as successful. */
+  onPersist?: (state: ServerState) => Promise<void>;
 }
 
 export interface StateContext {
@@ -330,10 +336,12 @@ export function createStateContext(
   options: StateContextOptions = {},
 ): StateContext {
   const limits = mergeResourceLimits(options.resourceLimits);
-  let state = createDefaultState();
+  let state = options.initialState
+    ? parseServerState(options.initialState)
+    : createDefaultState();
   let lastPublishedState = cloneState(state);
-  let revision = 0;
-  let sequence = 0;
+  let revision = options.initialRevision ?? 0;
+  let sequence = options.initialSequence ?? 0;
   let closed = false;
   let pendingDirtyAreas = new Set<DirtyArea>();
   const mutationTimestamps: number[] = [];
@@ -479,6 +487,7 @@ export function createStateContext(
             if (serializeServerState(state) !== previousJson) {
               bumpDocumentRevisions(previous);
               assertStateWithinLimits(state, limits);
+              await options.onPersist?.(cloneState(state));
               const areas = dirtyAreas
                 ? new Set(dirtyAreas)
                 : pendingDirtyAreas.size > 0
