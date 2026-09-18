@@ -553,6 +553,7 @@ export function createStateContext(
           const previous = cloneState(state);
           const previousJson = serializeServerState(previous);
           const expectedRevision = revision;
+          const expectedSequence = sequence;
           pendingDirtyAreas.clear();
 
           try {
@@ -599,7 +600,7 @@ export function createStateContext(
           } catch (error) {
             state = previous;
             revision = expectedRevision;
-            sequence = expectedRevision;
+            sequence = expectedSequence;
             lastPublishedState = cloneState(previous);
             stateJsonCache = null;
             pendingDirtyAreas.clear();
