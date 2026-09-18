@@ -22,6 +22,27 @@ export type StateChangeListener = (delta: StateDelta) => void;
 
 export type StateSnapshot = McpStateSnapshot;
 
+export interface ScopedStateAdapter {
+  /** Tool argument used to select the persisted state, for example "projectId". */
+  argumentName: string;
+  /** Zod validator inserted into every scoped tool schema. */
+  argumentSchema: any;
+  /** Tools that do not require persisted state, such as read_me/get_examples. */
+  unscopedToolNames?: readonly string[];
+  load: (
+    scopeId: string,
+  ) => Promise<{ state: ServerState; revision: number; sequence?: number } | null>;
+  /**
+   * Persist using optimistic concurrency. Return the new revision, or null when
+   * the expected revision no longer matches.
+   */
+  persist: (
+    scopeId: string,
+    state: ServerState,
+    expectedRevision: number,
+  ) => Promise<number | null>;
+}
+
 export interface StateContextOptions {
   resourceLimits?: Partial<ResourceLimits>;
   /** Canonical project loaded by a stateless/cloud host before the MCP request. */
@@ -30,6 +51,12 @@ export interface StateContextOptions {
   initialSequence?: number;
   /** Called after a successful mutation and before it is exposed as successful. */
   onPersist?: (state: ServerState) => Promise<void>;
+  /**
+   * Optional request-scoped persisted-state adapter. When present, native tools
+   * receive a required scope argument and hydrate the matching state before
+   * execution. This keeps HTTP MCP hosts stateless and horizontally scalable.
+   */
+  scopedState?: ScopedStateAdapter;
 }
 
 export interface StateContext {
@@ -37,6 +64,8 @@ export interface StateContext {
   getState: () => ServerState;
   getRevision: () => number;
   getSequence: () => number;
+  /** Current scoped state id while a scoped tool is executing. */
+  getScopeId: () => string;
   getSnapshot: () => StateSnapshot;
   getStateJSON: () => string;
   getSceneElementsJSON: () => string;
@@ -351,8 +380,53 @@ export function createStateContext(
     json: string;
   } | null = null;
   let mutationQueue: Promise<void> = Promise.resolve();
+  let currentScopeId: string | null = null;
+  const unscopedToolNames = new Set(options.scopedState?.unscopedToolNames ?? []);
 
   assertStateWithinLimits(state, limits);
+
+  function scopedSchema(name: string, schema: any): any {
+    const scoped = options.scopedState;
+    if (!scoped || unscopedToolNames.has(name)) return schema;
+    return { ...schema, [scoped.argumentName]: scoped.argumentSchema };
+  }
+
+  async function hydrateScopedState(name: string, args: any): Promise<any> {
+    const scoped = options.scopedState;
+    if (!scoped || unscopedToolNames.has(name)) {
+      currentScopeId = null;
+      return args;
+    }
+
+    const rawScopeId = args?.[scoped.argumentName];
+    const scopeId = typeof rawScopeId === 'string' ? rawScopeId : String(rawScopeId ?? '');
+    const loaded = await scoped.load(scopeId);
+    if (!loaded) {
+      throw new McpError(
+        ErrorCode.InvalidParams,
+        `Unknown ${scoped.argumentName}: ${scopeId}`,
+      );
+    }
+
+    state = parseServerState(loaded.state);
+    revision = loaded.revision;
+    sequence = loaded.sequence ?? loaded.revision;
+    lastPublishedState = cloneState(state);
+    stateJsonCache = null;
+    pendingDirtyAreas.clear();
+    currentScopeId = scopeId;
+
+    const handlerArgs = { ...args };
+    delete handlerArgs[scoped.argumentName];
+    return handlerArgs;
+  }
+
+  function requireScopeId(): string {
+    if (!currentScopeId) {
+      throw new McpError(ErrorCode.InvalidRequest, 'No scoped state is active');
+    }
+    return currentScopeId;
+  }
 
   function markDirty(area: DirtyArea | 'all'): void {
     if (area === 'all') {
@@ -454,10 +528,11 @@ export function createStateContext(
   }
 
   const tool: StateContext['tool'] = (name, description, schema, handler) => {
-    server.tool(name, description, schema, async (args: any) =>
+    server.tool(name, description, scopedSchema(name, schema), async (args: any) =>
       runSafely(name, async () => {
-        assertInputWithinLimits(args, limits);
-        return handler(args);
+        const handlerArgs = await hydrateScopedState(name, args);
+        assertInputWithinLimits(handlerArgs, limits);
+        return handler(handlerArgs);
       }),
     );
   };
@@ -469,17 +544,20 @@ export function createStateContext(
     handler,
     dirtyAreas,
   ) => {
-    server.tool(name, description, schema, async (args: any) => {
+    server.tool(name, description, scopedSchema(name, schema), async (args: any) => {
       const operation = mutationQueue.then(() =>
         runSafely(name, async () => {
           assertMutationAllowed();
-          assertInputWithinLimits(args, limits);
+          const handlerArgs = await hydrateScopedState(name, args);
+          assertInputWithinLimits(handlerArgs, limits);
           const previous = cloneState(state);
           const previousJson = serializeServerState(previous);
+          const expectedRevision = revision;
+          const expectedSequence = sequence;
           pendingDirtyAreas.clear();
 
           try {
-            const result = await handler(args);
+            const result = await handler(handlerArgs);
             if (closed) {
               throw new McpError(ErrorCode.ConnectionClosed, 'MCP session is closed');
             }
@@ -487,7 +565,29 @@ export function createStateContext(
             if (serializeServerState(state) !== previousJson) {
               bumpDocumentRevisions(previous);
               assertStateWithinLimits(state, limits);
-              await options.onPersist?.(cloneState(state));
+
+              if (options.scopedState && !unscopedToolNames.has(name)) {
+                const nextRevision = await options.scopedState.persist(
+                  requireScopeId(),
+                  cloneState(state),
+                  expectedRevision,
+                );
+                if (nextRevision === null) {
+                  throw new McpError(
+                    ErrorCode.InvalidRequest,
+                    'State changed concurrently; retry the tool call',
+                  );
+                }
+                if (nextRevision !== expectedRevision + 1) {
+                  throw new McpError(
+                    ErrorCode.InternalError,
+                    'Persisted state revision advanced unexpectedly',
+                  );
+                }
+              } else {
+                await options.onPersist?.(cloneState(state));
+              }
+
               const areas = dirtyAreas
                 ? new Set(dirtyAreas)
                 : pendingDirtyAreas.size > 0
@@ -499,6 +599,10 @@ export function createStateContext(
             return result;
           } catch (error) {
             state = previous;
+            revision = expectedRevision;
+            sequence = expectedSequence;
+            lastPublishedState = cloneState(previous);
+            stateJsonCache = null;
             pendingDirtyAreas.clear();
             throw error;
           }
@@ -529,6 +633,7 @@ export function createStateContext(
     getState: () => state,
     getRevision: () => revision,
     getSequence: () => sequence,
+    getScopeId: requireScopeId,
     getSnapshot,
     getStateJSON: () => {
       if (

@@ -4,6 +4,7 @@ import { readFile } from 'node:fs/promises';
 import { request as httpRequest } from 'node:http';
 import { setTimeout as delay } from 'node:timers/promises';
 import test from 'node:test';
+import { z } from 'zod';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { InMemoryTransport } from '@modelcontextprotocol/sdk/inMemory.js';
 import { parseProjectDocument } from '@excalimate/project-schema';
@@ -1298,4 +1299,106 @@ test('built CLI help and stdio initialization remain compatible', async () => {
   assert.equal(stdioResult.jsonrpc, '2.0');
   assert.equal(stdioResult.id, 1);
   assert.ok(stdioResult.result);
+});
+
+
+test('scoped state adapter isolates projects and requires projectId', async () => {
+  const states = new Map<string, { state: ServerState; revision: number }>([
+    ['prj_alpha', { state: createDefaultState(), revision: 1 }],
+    ['prj_beta', { state: createDefaultState(), revision: 1 }],
+  ]);
+  const persisted: string[] = [];
+
+  const server = createServer(new MemoryCheckpointStore(), undefined, {
+    scopedState: {
+      argumentName: 'projectId',
+      argumentSchema: z.string().min(1),
+      unscopedToolNames: ['read_me', 'get_examples'],
+      load: async (projectId) => {
+        const entry = states.get(projectId);
+        return entry
+          ? {
+              state: structuredClone(entry.state),
+              revision: entry.revision,
+              sequence: entry.revision,
+            }
+          : null;
+      },
+      persist: async (projectId, state, expectedRevision) => {
+        const entry = states.get(projectId);
+        if (!entry || entry.revision !== expectedRevision) return null;
+        const revision = expectedRevision + 1;
+        states.set(projectId, {
+          state: structuredClone(state),
+          revision,
+        });
+        persisted.push(projectId);
+        return revision;
+      },
+    },
+  });
+  const client = new Client({ name: 'scoped-test-client', version: '1.0.0' });
+  const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
+  await server.connect(serverTransport);
+  await client.connect(clientTransport);
+
+  try {
+    const tools = await client.listTools();
+    const createScene = tools.tools.find((tool) => tool.name === 'create_scene');
+    assert.ok(createScene);
+    assert.ok(
+      Array.isArray(createScene.inputSchema.required) &&
+        createScene.inputSchema.required.includes('projectId'),
+    );
+
+    const readMe = tools.tools.find((tool) => tool.name === 'read_me');
+    assert.ok(readMe);
+    assert.ok(
+      !Array.isArray(readMe.inputSchema.required) ||
+        !readMe.inputSchema.required.includes('projectId'),
+    );
+
+    const missing = await client.callTool({
+      name: 'get_scene',
+      arguments: { projectId: 'prj_missing' },
+    });
+    assert.equal(missing.isError, true);
+
+    await client.callTool({
+      name: 'create_scene',
+      arguments: {
+        projectId: 'prj_alpha',
+        elements: [
+          {
+            id: 'box',
+            type: 'rectangle',
+            x: 10,
+            y: 20,
+            width: 100,
+            height: 60,
+          },
+        ],
+      },
+    });
+
+    assert.deepEqual(persisted, ['prj_alpha']);
+    assert.equal(states.get('prj_alpha')?.revision, 2);
+    assert.equal(states.get('prj_beta')?.revision, 1);
+    assert.equal(states.get('prj_alpha')?.state.scene.elements.length, 1);
+    assert.equal(states.get('prj_beta')?.state.scene.elements.length, 0);
+
+    const alpha = await client.callTool({
+      name: 'get_scene',
+      arguments: { projectId: 'prj_alpha' },
+    });
+    const beta = await client.callTool({
+      name: 'get_scene',
+      arguments: { projectId: 'prj_beta' },
+    });
+    assert.match(toolText(alpha), /"id": "box"/);
+    assert.equal(toolText(beta).trim(), '[]');
+  } finally {
+    await client.close();
+    await server.close();
+  }
 });

@@ -49,9 +49,9 @@ Dockerfile:
 Dockerfile.api
 ```
 
-Give this service a public domain because VidBlitz is a separate Railway
-project. Protect every `/v1` and `/mcp` request with the same long,
-random `SERVICE_API_KEY`.
+Give this service a public domain. It is an independent Excalimate API, not a
+VidBlitz-specific backend. Protect every `/v1` and `/mcp` request with the
+same long, random `SERVICE_API_KEY`.
 
 Required variables:
 
@@ -76,6 +76,9 @@ RENDER_JOB_TIMEOUT_SECONDS=3600
 RENDER_HEARTBEAT_SECONDS=60
 RENDER_RETRY_LIMIT=2
 MAX_IMAGE_BYTES=4194304
+TEMP_PROJECT_TTL_HOURS=24
+PROJECT_CLEANUP_INTERVAL_MINUTES=15
+PROJECT_CLEANUP_BATCH=50
 ```
 
 The API initializes its own Excalimate tables and PgBoss schema/queue.
@@ -132,9 +135,42 @@ renders/...      # final MP4 files
 The API returns presigned upload URLs for assets and one-hour presigned
 download URLs for completed renders. The bucket itself remains private.
 
-## 5. VidBlitz integration
+## 5. Universal MCP integration
 
-Create a project:
+Use the same endpoint for VidBlitz, ChatGPT, Codex, Claude Code, or another
+MCP-capable agent:
+
+```text
+https://your-api-domain/mcp
+```
+
+Authenticate with:
+
+```http
+Authorization: Bearer <SERVICE_API_KEY>
+```
+
+The first tool call for a new animation is normally `create_project`. The
+returned `projectId` is supplied to every project-specific native Excalimate
+tool:
+
+```text
+create_project
+create_scene(projectId, ...)
+auto_animate(projectId, ...)
+queue_render(projectId, ...)
+get_render_status(projectId, renderId)
+```
+
+The canonical endpoint is stateless at the API-container layer. There is no
+server-side "active project" session. Tool calls hydrate temporary working
+state from PostgreSQL, and successful mutations persist with optimistic
+concurrency.
+
+For backward compatibility, `/mcp/:projectId` remains available, but new
+integrations should use `/mcp`.
+
+REST remains available for deterministic application-to-application flows:
 
 ```http
 POST /v1/projects
@@ -146,34 +182,16 @@ Content-Type: application/json
 }
 ```
 
-The response includes a project-bound MCP URL. Give that URL and the same
-bearer token to the visual agent.
+The response now returns `mcpUrl` pointing at the canonical `/mcp` endpoint
+and `legacyMcpUrl` for the project-bound compatibility endpoint.
 
-After authoring, either the agent can call `queue_render`, or VidBlitz can:
+VidBlitz should copy completed MP4s into its own asset library. Excalimate's
+database and bucket are temporary working/render state, not permanent customer
+asset storage.
 
-```http
-POST /v1/projects/<projectId>/renders
-Authorization: Bearer <SERVICE_API_KEY>
-Idempotency-Key: <vidblitz-shot-id>
-Content-Type: application/json
-
-{
-  "fps": 30,
-  "quality": "high",
-  "theme": "light"
-}
-```
-
-Poll:
-
-```http
-GET /v1/renders/<renderId>
-Authorization: Bearer <SERVICE_API_KEY>
-```
-
-When `status=completed`, the response contains a temporary signed MP4 URL.
-VidBlitz should copy that video into its own normal asset library just like any
-other sourced B-roll.
+Temporary projects expire automatically after `TEMP_PROJECT_TTL_HOURS`
+(default 24). Cleanup skips queued/processing renders and deletes completed
+render objects along with expired project state.
 
 ## Scaling
 

@@ -1,79 +1,128 @@
 # Excalimate on Railway
 
-This fork adds a production topology for using Excalimate as a private,
-scalable whiteboard-video source from VidBlitz or another application.
+This fork runs Excalimate as an independent, scalable animation/render service.
+VidBlitz is the first client, but the API and MCP are intentionally client-
+agnostic so the same deployment can be used by ChatGPT, Codex, Claude Code,
+other MCP agents, or a future standalone Excalimate application.
 
 ## Services
 
 | Railway resource | Purpose | Public? | Scaling |
 | --- | --- | --- | --- |
-| `excalimate-web` | Excalimate editor + private render runtime | Optional | 1+ replicas |
-| `excalimate-api` | REST API + stateless project-bound MCP | Yes for VidBlitz | Horizontal |
+| `excalimate-web` | Excalimate editor + private render runtime | Optional | Horizontal |
+| `excalimate-api` | REST API + global stateless MCP | Yes | Horizontal |
 | `excalimate-render-worker` | Chromium/WebCodecs + FFmpeg renders | No | Horizontal |
-| PostgreSQL | Projects, checkpoints, renders, PgBoss | No | Managed |
-| Storage Bucket | Images and finished MP4 files | Private | Managed |
+| PostgreSQL | Temporary projects, checkpoints, renders, PgBoss | No | Managed |
+| Storage Bucket | Temporary image staging + rendered MP4s | Private | Managed |
 
-The VidBlitz path has no Cloudflare runtime dependency.
+Application containers are disposable. Durable working state lives in
+PostgreSQL and the bucket, so any API replica can handle any request.
 
-## Why the MCP can scale
+## Canonical MCP endpoint
 
-Upstream Excalimate's HTTP MCP stores session state in a process-local Map.
-That is appropriate for its local authoring workflow, but it cannot be safely
-replicated behind a load balancer without sticky sessions.
+Use one MCP endpoint everywhere:
 
-This fork adds a project-bound stateless endpoint:
+```text
+POST https://<api-domain>/mcp
+Authorization: Bearer <SERVICE_API_KEY>
+```
+
+The global endpoint exposes lifecycle tools such as:
+
+- `create_project`
+- `get_project`
+- `delete_project`
+
+All native Excalimate project-specific tools automatically require a
+`projectId` argument. A typical agent flow is:
+
+```text
+create_project
+    -> projectId
+create_scene(projectId, ...)
+add_elements(projectId, ...)
+auto_animate(projectId, ...)
+queue_render(projectId, ...)
+get_render_status(projectId, renderId)
+    -> temporary signed MP4 URL
+```
+
+The server does not keep an "active project" in process memory. Every
+project-specific tool call loads the requested project from PostgreSQL and
+successful mutations use optimistic concurrency before they are returned to
+the agent. This makes the endpoint portable across ChatGPT, Codex, Claude,
+VidBlitz, and other MCP clients without sticky sessions.
+
+### Legacy compatibility
+
+The project-bound endpoint remains available:
 
 ```text
 POST /mcp/:projectId
 ```
 
-For every MCP request the API:
+It is retained for compatibility only. New integrations should use `/mcp`.
 
-1. Loads the canonical V2 project from PostgreSQL.
-2. Creates a fresh stateless Streamable HTTP MCP transport.
-3. Runs the normal Excalimate MCP tools.
-4. Persists a successful mutation back to PostgreSQL using optimistic
-   concurrency.
+## Temporary state, caller-owned assets
 
-Any API replica can therefore handle any request.
+An Excalimate project is animation working state, not a customer/tenant record.
+There is no user/workspace/tenant model in this deployment.
+
+By default temporary projects expire after 24 hours. The cleanup process skips
+projects with queued/processing renders and removes completed render objects
+when an expired project is deleted.
+
+Permanent assets and final videos should be copied into the calling
+application's storage. For VidBlitz, the final MP4 belongs in the normal
+VidBlitz asset library.
+
+## Authentication
+
+Today the production MCP and REST API use a static API key:
+
+```http
+Authorization: Bearer <SERVICE_API_KEY>
+```
+
+`X-API-Key` is also accepted for REST/MCP HTTP clients.
+
+OAuth can be added later in front of the same canonical `/mcp` endpoint for
+user-facing integrations without changing the project/render architecture.
 
 ## Image workflow
 
-The Railway MCP adds:
+The MCP provides:
 
 - `add_image_from_url`
 - `add_image_from_asset`
 
-For generated images, the preferred flow is:
-
-1. `POST /v1/assets/presign`
-2. Upload directly to the Railway Storage Bucket.
-3. Tell the agent the returned asset key.
-4. Agent calls `add_image_from_asset`.
-
-This keeps binary payloads out of MCP requests.
+For caller-owned images, prefer a temporary accessible URL and
+`add_image_from_url`. The bucket presign endpoint remains available when
+temporary upload staging is useful.
 
 ## Render workflow
 
 ```text
-VidBlitz / Agent
+Agent / VidBlitz
      |
-POST /v1/projects/:id/renders
+global /mcp or REST API
      |
-Postgres snapshot + PgBoss job
+Postgres project snapshot + PgBoss job
      |
 any render-worker replica
      |
-Playwright -> render.html -> Excalimate native exporter
+Playwright -> render.html -> Excalimate exporter
      |
 MP4, or WebM -> FFmpeg H.264 fallback
      |
 Railway Storage Bucket
      |
-GET /v1/renders/:id -> signed URL
+temporary signed URL
+     |
+caller copies final video to permanent storage
 ```
 
-A render row stores the exact project document and project version at queue
-time. Later edits cannot alter an already queued render.
+A render row stores the exact project document/version at queue time. Later
+edits cannot change an already queued render.
 
-See [DEPLOYMENT.md](./DEPLOYMENT.md) for setup.
+See [DEPLOYMENT.md](./DEPLOYMENT.md) for deployment details.

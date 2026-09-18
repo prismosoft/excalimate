@@ -9,6 +9,7 @@ import { PgBoss } from 'pg-boss';
 import { nanoid } from 'nanoid';
 import { z } from 'zod';
 import {
+  DeleteObjectsCommand,
   GetObjectCommand,
   PutObjectCommand,
   S3Client,
@@ -48,6 +49,12 @@ const MCP_MAX_STATE_BYTES = integerEnv(
 const PUBLIC_BASE_URL = process.env.PUBLIC_BASE_URL?.replace(/\/$/, '');
 const PG_POOL_MAX = integerEnv('PG_POOL_MAX', 5);
 const PGBOSS_POOL_MAX = integerEnv('PGBOSS_POOL_MAX', 4);
+const TEMP_PROJECT_TTL_HOURS = nonNegativeIntegerEnv('TEMP_PROJECT_TTL_HOURS', 24);
+const PROJECT_CLEANUP_INTERVAL_MINUTES = integerEnv(
+  'PROJECT_CLEANUP_INTERVAL_MINUTES',
+  15,
+);
+const PROJECT_CLEANUP_BATCH = integerEnv('PROJECT_CLEANUP_BATCH', 50);
 
 const pool = new Pool({
   connectionString: DATABASE_URL,
@@ -102,32 +109,12 @@ app.post(
   '/v1/projects',
   asyncHandler(async (req, res) => {
     const input = projectCreateSchema.parse(req.body ?? {});
-    const id = `prj_${nanoid(18)}`;
-    const original = input.project
-      ? parseProjectDocument(input.project)
-      : createDefaultState();
-    const now = new Date().toISOString();
-    const document = parseProjectDocument({
-      ...original,
-      metadata: {
-        ...original.metadata,
-        id,
-        name: input.name ?? original.metadata.name,
-        createdAt: original.metadata.createdAt ?? now,
-        updatedAt: now,
-      },
-    });
-
-    await pool.query(
-      `insert into excalimate_projects (id, document, version)
-       values ($1, $2::jsonb, 1)`,
-      [id, JSON.stringify(document)],
-    );
-
+    const project = await createProject(input);
     res.status(201).json({
-      id,
-      version: 1,
-      mcpUrl: `${baseUrl(req)}/mcp/${id}`,
+      id: project.id,
+      version: project.version,
+      mcpUrl: `${baseUrl(req)}/mcp`,
+      legacyMcpUrl: `${baseUrl(req)}/mcp/${project.id}`,
     });
   }),
 );
@@ -141,6 +128,14 @@ app.get(
       return;
     }
     res.json(project);
+  }),
+);
+
+app.delete(
+  '/v1/projects/:id',
+  asyncHandler(async (req, res) => {
+    const result = await deleteProject(routeParam(req, 'id'));
+    res.status(result.deleted ? 200 : 404).json(result);
   }),
 );
 
@@ -235,6 +230,59 @@ app.post(
   }),
 );
 
+// Canonical stateless MCP endpoint. Project lifecycle tools are unscoped.
+// Every native authoring/query/render tool receives a required projectId,
+// hydrates that temporary project from PostgreSQL, and persists successful
+// mutations with optimistic concurrency. Any API replica can handle any call.
+app.post(
+  '/mcp',
+  asyncHandler(async (req, res) => {
+    let stateContext: ReturnType<typeof createServer>['stateContext'] | undefined;
+    const checkpointStore = new DbCheckpointStore(() => {
+      if (!stateContext) throw new Error('mcp_scope_not_initialized');
+      return stateContext.getScopeId();
+    });
+
+    const server = createServer(checkpointStore, undefined, {
+      resourceLimits: {
+        maxStringLength: MCP_MAX_STRING_LENGTH,
+        maxStateBytes: MCP_MAX_STATE_BYTES,
+      },
+      scopedState: {
+        argumentName: 'projectId',
+        argumentSchema: z.string().regex(/^prj_[A-Za-z0-9_-]{8,64}$/),
+        unscopedToolNames: ['read_me', 'get_examples'],
+        load: async (projectId) => {
+          const project = await loadProject(projectId);
+          return project
+            ? {
+                state: project.document as ServerState,
+                revision: project.version,
+                sequence: project.version,
+              }
+            : null;
+        },
+        persist: async (projectId, state, expectedRevision) => {
+          try {
+            return await persistProject(projectId, state, expectedRevision);
+          } catch (error) {
+            if (error instanceof Error && error.message === 'project_conflict') {
+              return null;
+            }
+            throw error;
+          }
+        },
+      },
+    });
+    stateContext = server.stateContext;
+
+    registerProjectLifecycleTools(server);
+    registerRailwayTools(server.stateContext);
+
+    await handleStatelessMcpRequest(server, req, res);
+  }),
+);
+
 // Project-bound stateless MCP. Every request reconstructs the MCP server around
 // the canonical project persisted in PostgreSQL. Any Railway API replica can
 // therefore handle any request without sticky sessions.
@@ -275,33 +323,23 @@ app.post(
 
     registerRailwayTools(server.stateContext, routeParam(req, 'projectId'));
 
-    const transport = new StreamableHTTPServerTransport({
-      sessionIdGenerator: undefined,
-      enableJsonResponse: true,
-    });
-
-    const close = () => {
-      void transport.close().catch(() => undefined);
-      void server.close().catch(() => undefined);
-    };
-    res.on('close', close);
-
-    await server.connect(transport);
-    await transport.handleRequest(req, res, req.body);
+    await handleStatelessMcpRequest(server, req, res);
   }),
 );
 
 for (const method of ['get', 'delete'] as const) {
-  app[method]('/mcp/:projectId', (_req, res) => {
-    res.status(405).json({
-      jsonrpc: '2.0',
-      error: {
-        code: -32000,
-        message: 'Method not allowed for stateless JSON-response MCP',
-      },
-      id: null,
+  for (const route of ['/mcp', '/mcp/:projectId']) {
+    app[method](route, (_req, res) => {
+      res.status(405).json({
+        jsonrpc: '2.0',
+        error: {
+          code: -32000,
+          message: 'Method not allowed for stateless JSON-response MCP',
+        },
+        id: null,
+      });
     });
-  });
+  }
 }
 
 app.use(
@@ -328,6 +366,10 @@ app.use(
     }
     if (message === 'project_not_found') {
       res.status(404).json({ error: 'project_not_found' });
+      return;
+    }
+    if (message === 'project_has_active_renders') {
+      res.status(409).json({ error: 'project_has_active_renders' });
       return;
     }
     if (message === 'image_too_large') {
@@ -369,7 +411,22 @@ async function main(): Promise<void> {
     console.log(`[excalimate-api] listening on :${PORT}`);
   });
 
+  let cleanupTimer: NodeJS.Timeout | undefined;
+  if (TEMP_PROJECT_TTL_HOURS > 0) {
+    const intervalMs = PROJECT_CLEANUP_INTERVAL_MINUTES * 60_000;
+    cleanupTimer = setInterval(() => {
+      void cleanupExpiredProjects().catch((error) => {
+        console.error('[excalimate-cleanup]', error);
+      });
+    }, intervalMs);
+    cleanupTimer.unref();
+    void cleanupExpiredProjects().catch((error) => {
+      console.error('[excalimate-cleanup]', error);
+    });
+  }
+
   const shutdown = async () => {
+    if (cleanupTimer) clearInterval(cleanupTimer);
     server.close();
     await boss.stop({ graceful: true, timeout: 30_000 }).catch(() => undefined);
     await pool.end().catch(() => undefined);
@@ -385,8 +442,9 @@ async function main(): Promise<void> {
 
 function registerRailwayTools(
   ctx: ReturnType<typeof createServer>['stateContext'],
-  projectId: string,
+  fixedProjectId?: string,
 ): void {
+  const projectId = () => fixedProjectId ?? ctx.getScopeId();
   ctx.mutatingTool(
     'add_image_from_asset',
     'Attach an image previously uploaded to the Railway Storage Bucket and add it to the Excalidraw scene.',
@@ -469,7 +527,7 @@ function registerRailwayTools(
     },
     async (args) => {
       const options = renderOptionsSchema.parse(args);
-      const render = await enqueueRender(projectId, options);
+      const render = await enqueueRender(projectId(), options);
       return {
         content: [
           {
@@ -489,7 +547,7 @@ function registerRailwayTools(
     },
     async ({ renderId }) => {
       const render = await getRender(renderId);
-      if (!render || render.project_id !== projectId) {
+      if (!render || render.project_id !== projectId()) {
         return {
           content: [
             {
@@ -505,6 +563,98 @@ function registerRailwayTools(
           {
             type: 'text' as const,
             text: JSON.stringify(await publicRender(render)),
+          },
+        ],
+      };
+    },
+  );
+}
+
+async function handleStatelessMcpRequest(
+  server: ReturnType<typeof createServer>,
+  req: Request,
+  res: ExpressResponse,
+): Promise<void> {
+  const transport = new StreamableHTTPServerTransport({
+    sessionIdGenerator: undefined,
+    enableJsonResponse: true,
+  });
+
+  const close = () => {
+    void transport.close().catch(() => undefined);
+    void server.close().catch(() => undefined);
+  };
+  res.on('close', close);
+
+  await server.connect(transport);
+  await transport.handleRequest(req, res, req.body);
+}
+
+function registerProjectLifecycleTools(
+  server: ReturnType<typeof createServer>,
+): void {
+  (server.tool as any)(
+    'create_project',
+    'Create temporary Excalimate animation working state. Use the returned projectId on all project-specific tools.',
+    {
+      name: z.string().min(1).max(256).optional(),
+    },
+    async ({ name }: { name?: string }) => {
+      const project = await createProject({ name });
+      return {
+        content: [
+          {
+            type: 'text' as const,
+            text: JSON.stringify({
+              projectId: project.id,
+              version: project.version,
+            }),
+          },
+        ],
+      };
+    },
+  );
+
+  (server.tool as any)(
+    'get_project',
+    'Get temporary project metadata and current optimistic-concurrency version.',
+    {
+      projectId: z.string().regex(/^prj_[A-Za-z0-9_-]{8,64}$/),
+    },
+    async ({ projectId }: { projectId: string }) => {
+      const project = await loadProject(projectId);
+      return {
+        content: [
+          {
+            type: 'text' as const,
+            text: JSON.stringify(
+              project
+                ? {
+                    projectId: project.id,
+                    version: project.version,
+                    metadata: project.document.metadata,
+                  }
+                : { projectId, found: false },
+            ),
+          },
+        ],
+      };
+    },
+  );
+
+  (server.tool as any)(
+    'delete_project',
+    'Delete temporary animation working state and completed render objects. Refuses deletion while renders are active.',
+    {
+      projectId: z.string().regex(/^prj_[A-Za-z0-9_-]{8,64}$/),
+    },
+    async ({ projectId }: { projectId: string }) => {
+      const result = await deleteProject(projectId);
+      return {
+        content: [
+          {
+            type: 'text' as const,
+            text: JSON.stringify(result),
           },
         ],
       };
@@ -986,6 +1136,122 @@ async function publicRender(render: RenderRow) {
   };
 }
 
+type ProjectCreateInput = z.infer<typeof projectCreateSchema>;
+
+async function createProject(
+  input: ProjectCreateInput,
+): Promise<{ id: string; version: number; document: ProjectDocument }> {
+  const id = `prj_${nanoid(18)}`;
+  const original = input.project
+    ? parseProjectDocument(input.project)
+    : createDefaultState();
+  const now = new Date().toISOString();
+  const document = parseProjectDocument({
+    ...original,
+    metadata: {
+      ...original.metadata,
+      id,
+      name: input.name ?? original.metadata.name,
+      createdAt: original.metadata.createdAt ?? now,
+      updatedAt: now,
+    },
+  });
+
+  await pool.query(
+    `insert into excalimate_projects (id, document, version)
+     values ($1, $2::jsonb, 1)`,
+    [id, JSON.stringify(document)],
+  );
+
+  return { id, version: 1, document };
+}
+
+async function deleteProject(
+  id: string,
+): Promise<{ deleted: boolean; projectId: string; renderObjectsDeleted: number }> {
+  const active = await pool.query(
+    `select 1
+       from excalimate_renders
+      where project_id = $1
+        and status in ('queued', 'processing')
+      limit 1`,
+    [id],
+  );
+  if ((active.rowCount ?? 0) > 0) {
+    throw new Error('project_has_active_renders');
+  }
+
+  const outputs = await pool.query<{ output_key: string }>(
+    `select output_key
+       from excalimate_renders
+      where project_id = $1
+        and output_key is not null`,
+    [id],
+  );
+
+  const deleted = await pool.query(
+    `delete from excalimate_projects where id = $1 returning id`,
+    [id],
+  );
+  if (deleted.rowCount !== 1) {
+    return { deleted: false, projectId: id, renderObjectsDeleted: 0 };
+  }
+
+  const keys = outputs.rows.map((row) => row.output_key);
+  let renderObjectsDeleted = 0;
+  for (let index = 0; index < keys.length; index += 1000) {
+    const chunk = keys.slice(index, index + 1000);
+    if (chunk.length === 0) continue;
+    try {
+      await s3.send(
+        new DeleteObjectsCommand({
+          Bucket: bucketName(),
+          Delete: {
+            Objects: chunk.map((Key) => ({ Key })),
+            Quiet: true,
+          },
+        }),
+      );
+      renderObjectsDeleted += chunk.length;
+    } catch (error) {
+      console.error('[excalimate-cleanup] failed to delete render objects', {
+        projectId: id,
+        count: chunk.length,
+        error,
+      });
+    }
+  }
+
+  return { deleted: true, projectId: id, renderObjectsDeleted };
+}
+
+async function cleanupExpiredProjects(): Promise<void> {
+  if (TEMP_PROJECT_TTL_HOURS <= 0) return;
+
+  const { rows } = await pool.query<{ id: string }>(
+    `select p.id
+       from excalimate_projects p
+      where p.updated_at < now() - ($1::double precision * interval '1 hour')
+        and not exists (
+          select 1
+            from excalimate_renders r
+           where r.project_id = p.id
+             and r.status in ('queued', 'processing')
+        )
+      order by p.updated_at asc
+      limit $2`,
+    [TEMP_PROJECT_TTL_HOURS, PROJECT_CLEANUP_BATCH],
+  );
+
+  for (const row of rows) {
+    await deleteProject(row.id);
+  }
+
+  if (rows.length > 0) {
+    console.log(`[excalimate-cleanup] deleted ${rows.length} expired project(s)`);
+  }
+}
+
 async function loadProject(
   id: string,
 ): Promise<{
@@ -1055,10 +1321,17 @@ function withCanonicalProjectId(
 }
 
 class DbCheckpointStore implements CheckpointStore {
-  constructor(private readonly projectId: string) {}
+  constructor(private readonly projectIdSource: string | (() => string)) {}
+
+  private projectId(): string {
+    return typeof this.projectIdSource === 'function'
+      ? this.projectIdSource()
+      : this.projectIdSource;
+  }
 
   async save(id: string, data: ServerState): Promise<void> {
     validateCheckpointId(id);
+    const projectId = this.projectId();
     await pool.query(
       `insert into excalimate_checkpoints
          (project_id, id, document)
@@ -1068,7 +1341,7 @@ class DbCheckpointStore implements CheckpointStore {
          set document = excluded.document,
              updated_at = now()`,
       [
-        this.projectId,
+        projectId,
         id,
         JSON.stringify(parseProjectDocument(data)),
       ],
@@ -1084,17 +1357,18 @@ class DbCheckpointStore implements CheckpointStore {
              order by updated_at desc
              offset 100
           )`,
-      [this.projectId],
+      [projectId],
     );
   }
 
   async load(id: string): Promise<ServerState | null> {
     validateCheckpointId(id);
+    const projectId = this.projectId();
     const { rows } = await pool.query<{ document: unknown }>(
       `select document
          from excalimate_checkpoints
         where project_id = $1 and id = $2`,
-      [this.projectId, id],
+      [projectId, id],
     );
 
     return rows[0]
@@ -1103,13 +1377,14 @@ class DbCheckpointStore implements CheckpointStore {
   }
 
   async list(): Promise<string[]> {
+    const projectId = this.projectId();
     const { rows } = await pool.query<{ id: string }>(
       `select id
          from excalimate_checkpoints
         where project_id = $1
         order by updated_at desc
         limit 100`,
-      [this.projectId],
+      [projectId],
     );
     return rows.map((row) => row.id);
   }
