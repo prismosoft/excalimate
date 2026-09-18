@@ -2,7 +2,7 @@ import crypto from 'node:crypto';
 import dns from 'node:dns/promises';
 import net from 'node:net';
 import { Readable } from 'node:stream';
-import express, { type NextFunction, type Request, type Response } from 'express';
+import express, { type NextFunction, type Request, type Response as ExpressResponse } from 'express';
 import helmet from 'helmet';
 import { Pool } from 'pg';
 import { PgBoss } from 'pg-boss';
@@ -127,7 +127,7 @@ app.post(
 app.get(
   '/v1/projects/:id',
   asyncHandler(async (req, res) => {
-    const project = await loadProject(req.params.id);
+    const project = await loadProject(routeParam(req, 'id'));
     if (!project) {
       res.status(404).json({ error: 'project_not_found' });
       return;
@@ -145,23 +145,23 @@ app.put(
   '/v1/projects/:id',
   asyncHandler(async (req, res) => {
     const input = replaceProjectSchema.parse(req.body);
-    const existing = await loadProject(req.params.id);
+    const existing = await loadProject(routeParam(req, 'id'));
     if (!existing) {
       res.status(404).json({ error: 'project_not_found' });
       return;
     }
 
     const document = withCanonicalProjectId(
-      req.params.id,
+      routeParam(req, 'id'),
       parseProjectDocument(input.project),
     );
     const expected = input.expectedVersion ?? existing.version;
     const version = await persistProject(
-      req.params.id,
+      routeParam(req, 'id'),
       document,
       expected,
     );
-    res.json({ id: req.params.id, version });
+    res.json({ id: routeParam(req, 'id'), version });
   }),
 );
 
@@ -179,7 +179,7 @@ app.post(
     const options = renderOptionsSchema.parse(req.body ?? {});
     const idempotencyKey = parseIdempotencyKey(req.get('idempotency-key'));
     const render = await enqueueRender(
-      req.params.id,
+      routeParam(req, 'id'),
       options,
       idempotencyKey,
     );
@@ -190,7 +190,7 @@ app.post(
 app.get(
   '/v1/renders/:id',
   asyncHandler(async (req, res) => {
-    const render = await getRender(req.params.id);
+    const render = await getRender(routeParam(req, 'id'));
     if (!render) {
       res.status(404).json({ error: 'render_not_found' });
       return;
@@ -233,7 +233,7 @@ app.post(
 app.post(
   '/mcp/:projectId',
   asyncHandler(async (req, res) => {
-    const row = await loadProject(req.params.projectId);
+    const row = await loadProject(routeParam(req, 'projectId'));
     if (!row) {
       res.status(404).json({
         jsonrpc: '2.0',
@@ -244,21 +244,21 @@ app.post(
     }
 
     let expectedVersion = row.version;
-    const checkpointStore = new DbCheckpointStore(req.params.projectId);
+    const checkpointStore = new DbCheckpointStore(routeParam(req, 'projectId'));
     const server = createServer(checkpointStore, undefined, {
       initialState: row.document as ServerState,
       initialRevision: row.version,
       initialSequence: row.version,
       onPersist: async (state) => {
         expectedVersion = await persistProject(
-          req.params.projectId,
+          routeParam(req, 'projectId'),
           state,
           expectedVersion,
         );
       },
     });
 
-    registerRailwayTools(server.stateContext, req.params.projectId);
+    registerRailwayTools(server.stateContext, routeParam(req, 'projectId'));
 
     const transport = new StreamableHTTPServerTransport({
       sessionIdGenerator: undefined,
@@ -293,7 +293,7 @@ app.use(
   (
     error: unknown,
     _req: Request,
-    res: Response,
+    res: ExpressResponse,
     _next: NextFunction,
   ) => {
     if (error instanceof z.ZodError) {
@@ -637,7 +637,7 @@ async function fetchSafeImage(
 }
 
 async function readResponseBuffer(
-  response: Response,
+  response: globalThis.Response,
   maxBytes: number,
 ): Promise<Buffer> {
   if (!response.body) {
@@ -1175,6 +1175,14 @@ function baseUrl(req: Request): string {
   return `${proto}://${req.get('host')}`;
 }
 
+function routeParam(req: Request, name: string): string {
+  const value = req.params[name];
+  if (typeof value !== 'string' || value.length === 0) {
+    throw new Error('invalid_route_parameter');
+  }
+  return value;
+}
+
 function parseIdempotencyKey(
   value: string | undefined,
 ): string | undefined {
@@ -1243,13 +1251,13 @@ function safeEqual(a: string, b: string): boolean {
 function asyncHandler(
   handler: (
     req: Request,
-    res: Response,
+    res: ExpressResponse,
     next: NextFunction,
   ) => Promise<void>,
 ) {
   return (
     req: Request,
-    res: Response,
+    res: ExpressResponse,
     next: NextFunction,
   ) => {
     void handler(req, res, next).catch(next);
