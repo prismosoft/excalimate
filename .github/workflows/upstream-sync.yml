@@ -1,0 +1,58 @@
+name: Sync Excalimate Upstream
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: '27 8 * * *'
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: main
+          fetch-depth: 0
+
+      - name: Configure Git
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git remote add upstream https://github.com/excalimate/excalimate.git
+          git fetch upstream main
+          git fetch origin main
+
+      - name: Check whether upstream is already included
+        id: check
+        run: |
+          if git merge-base --is-ancestor upstream/main origin/main; then
+            echo "needed=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "needed=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Merge upstream into sync branch
+        if: steps.check.outputs.needed == 'true'
+        run: |
+          git checkout -B upstream-sync origin/main
+          git merge --no-edit upstream/main
+          git push --force-with-lease origin upstream-sync
+
+      - name: Open or update sync PR
+        if: steps.check.outputs.needed == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if gh pr view upstream-sync --base main >/dev/null 2>&1; then
+            echo "Existing upstream sync PR updated."
+          else
+            gh pr create \
+              --base main \
+              --head upstream-sync \
+              --title "chore: sync Excalimate upstream" \
+              --body "Automated merge of \`excalimate/excalimate:main\` into this fork. Review Railway integration conflicts before merging."
+          fi
