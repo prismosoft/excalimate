@@ -8,7 +8,8 @@ RUN npm ci
 RUN npm run build --workspace @excalimate/project-schema \
  && npm run build --workspace @excalimate/animation-core \
  && npm run build --workspace @excalimate/mcp-server
-RUN npm prune --omit=dev
+RUN npm prune --omit=dev \\
+ && npm install --no-save --omit=dev @modelcontextprotocol/sdk@1.30.0 nanoid@5.1.16
 
 COPY services/api ./services/api
 WORKDIR /app/services/api
