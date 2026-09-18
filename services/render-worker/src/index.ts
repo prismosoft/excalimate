@@ -1,5 +1,5 @@
 import { createReadStream } from 'node:fs';
-import { mkdtemp, stat, unlink } from 'node:fs/promises';
+import { mkdtemp, rm, stat, unlink } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { spawn } from 'node:child_process';
@@ -213,6 +213,7 @@ async function processRender(renderId: string): Promise<void> {
       safeUnlink(webm),
       safeUnlink(finalMp4),
     ]);
+    await rm(workDir, { recursive: true, force: true }).catch(() => undefined);
   }
 }
 
