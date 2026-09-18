@@ -8,7 +8,7 @@ RUN npm ci
 RUN npm run build --workspace @excalimate/project-schema \
  && npm run build --workspace @excalimate/animation-core \
  && npm run build --workspace @excalimate/mcp-server
-RUN npm prune --omit=dev
+RUN npm prune --omit=dev && npm install --no-save --omit=dev --force @modelcontextprotocol/sdk@1.30.0 nanoid@5.1.16 && rm -rf /app/mcp-server/node_modules/@modelcontextprotocol/sdk /app/mcp-server/node_modules/nanoid && node -e "const fs=require('fs'); const sdk=JSON.parse(fs.readFileSync('/app/node_modules/@modelcontextprotocol/sdk/package.json','utf8')).version; const nano=JSON.parse(fs.readFileSync('/app/node_modules/nanoid/package.json','utf8')).version; if(sdk!=='1.30.0'||nano!=='5.1.16') process.exit(1); console.log('runtime deps:',sdk,nano)"
 
 COPY services/api ./services/api
 WORKDIR /app/services/api
