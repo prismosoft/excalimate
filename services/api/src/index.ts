@@ -593,7 +593,7 @@ async function handleStatelessMcpRequest(
 function registerProjectLifecycleTools(
   server: ReturnType<typeof createServer>,
 ): void {
-  server.tool(
+  (server.tool as any)(
     'create_project',
     'Create temporary Excalimate animation working state. Use the returned projectId on all project-specific tools.',
     {
@@ -615,7 +615,7 @@ function registerProjectLifecycleTools(
     },
   );
 
-  server.tool(
+  (server.tool as any)(
     'get_project',
     'Get temporary project metadata and current optimistic-concurrency version.',
     {
@@ -642,7 +642,7 @@ function registerProjectLifecycleTools(
     },
   );
 
-  server.tool(
+  (server.tool as any)(
     'delete_project',
     'Delete temporary animation working state and completed render objects. Refuses deletion while renders are active.',
     {
