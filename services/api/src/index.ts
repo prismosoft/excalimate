@@ -37,6 +37,14 @@ const RENDER_JOB_TIMEOUT_SECONDS = integerEnv(
 const RENDER_HEARTBEAT_SECONDS = integerEnv('RENDER_HEARTBEAT_SECONDS', 60);
 const RENDER_RETRY_LIMIT = nonNegativeIntegerEnv('RENDER_RETRY_LIMIT', 2);
 const MAX_IMAGE_BYTES = integerEnv('MAX_IMAGE_BYTES', 4 * 1024 * 1024);
+const MCP_MAX_STRING_LENGTH = integerEnv(
+  'MCP_MAX_STRING_LENGTH',
+  8 * 1024 * 1024,
+);
+const MCP_MAX_STATE_BYTES = integerEnv(
+  'MCP_MAX_STATE_BYTES',
+  20 * 1024 * 1024,
+);
 const PUBLIC_BASE_URL = process.env.PUBLIC_BASE_URL?.replace(/\/$/, '');
 const PG_POOL_MAX = integerEnv('PG_POOL_MAX', 5);
 const PGBOSS_POOL_MAX = integerEnv('PGBOSS_POOL_MAX', 4);
@@ -249,6 +257,13 @@ app.post(
       initialState: row.document as ServerState,
       initialRevision: row.version,
       initialSequence: row.version,
+      resourceLimits: {
+        // Upstream's 100 KB string limit is excellent for pure diagrams but
+        // Excalidraw BinaryFiles embed image data URLs. Keep this bounded while
+        // allowing several compressed reference images in a video scene.
+        maxStringLength: MCP_MAX_STRING_LENGTH,
+        maxStateBytes: MCP_MAX_STATE_BYTES,
+      },
       onPersist: async (state) => {
         expectedVersion = await persistProject(
           routeParam(req, 'projectId'),
