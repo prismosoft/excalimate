@@ -1,0 +1,96 @@
+name: Railway Production
+
+on:
+  push:
+    branches: [main, railway-production]
+    paths:
+      - 'Dockerfile.*'
+      - 'render.html'
+      - 'vite.config.ts'
+      - 'src/render/**'
+      - 'services/**'
+      - 'railway/**'
+      - 'mcp-server/**'
+      - 'packages/**'
+      - '.github/workflows/railway.yml'
+  pull_request:
+    branches: [main]
+    paths:
+      - 'Dockerfile.*'
+      - 'render.html'
+      - 'vite.config.ts'
+      - 'src/render/**'
+      - 'services/**'
+      - 'railway/**'
+      - 'mcp-server/**'
+      - 'packages/**'
+      - '.github/workflows/railway.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  web:
+    name: Railway web build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+      - run: npm ci
+      - name: Build Railway target
+        run: npm run build
+        env:
+          EXCALIMATE_DEPLOY_TARGET: railway
+
+  api:
+    name: Railway API typecheck/build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+      - run: npm ci
+      - name: Build shared runtime and MCP
+        run: |
+          npm run build --workspace @excalimate/project-schema
+          npm run build --workspace @excalimate/animation-core
+          npm run build --workspace @excalimate/mcp-server
+      - name: Install API dependencies
+        working-directory: services/api
+        run: npm install --no-audit --no-fund
+      - name: Build API
+        working-directory: services/api
+        run: npm run build
+
+  worker:
+    name: Render worker typecheck/build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+      - name: Install worker dependencies
+        working-directory: services/render-worker
+        run: npm install --no-audit --no-fund
+      - name: Build worker
+        working-directory: services/render-worker
+        run: npm run build
+
+  docker:
+    name: Docker build (${{ matrix.image }})
+    runs-on: ubuntu-latest
+    needs: [web, api, worker]
+    strategy:
+      fail-fast: false
+      matrix:
+        image: [web, api, worker]
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build image
+        run: docker build -f Dockerfile.${{ matrix.image }} -t excalimate-${{ matrix.image }}:ci .
