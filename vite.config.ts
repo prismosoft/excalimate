@@ -8,8 +8,11 @@ import { fileURLToPath, URL } from 'node:url'
 
 import { cloudflare } from "@cloudflare/vite-plugin";
 
+const deployTarget = process.env.EXCALIMATE_DEPLOY_TARGET ?? 'cloudflare'
+const deploymentPlugins = deployTarget === 'railway' ? [] : [cloudflare()]
+
 export default defineConfig({
-  plugins: [react(), tailwindcss(), playerIsolationPlugin(), cloudflare()],
+  plugins: [react(), tailwindcss(), playerIsolationPlugin(), ...deploymentPlugins],
   resolve: {
     alias: {
       '@': '/src',
@@ -33,6 +36,7 @@ export default defineConfig({
       input: {
         editor: fileURLToPath(new URL('./index.html', import.meta.url)),
         player: fileURLToPath(new URL('./player.html', import.meta.url)),
+        render: fileURLToPath(new URL('./render.html', import.meta.url)),
       },
       output: {
         manualChunks(moduleId) {
