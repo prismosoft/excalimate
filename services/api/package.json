@@ -1,0 +1,27 @@
+{
+  "name": "@prismosoft/excalimate-api",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "start": "node dist/index.js"
+  },
+  "dependencies": {
+    "@aws-sdk/client-s3": "3.1135.0",
+    "@aws-sdk/s3-request-presigner": "3.1135.0",
+    "@modelcontextprotocol/sdk": "1.25.0",
+    "express": "5.1.0",
+    "helmet": "8.1.0",
+    "nanoid": "5.1.6",
+    "pg": "8.23.0",
+    "pg-boss": "12.33.1",
+    "zod": "3.24.0"
+  },
+  "devDependencies": {
+    "@types/express": "5.0.3",
+    "@types/node": "24.10.1",
+    "@types/pg": "8.23.1",
+    "typescript": "5.9.3"
+  }
+}
