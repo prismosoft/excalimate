@@ -68,7 +68,7 @@ app.get('/healthz', async (_req, res) => {
   }
 });
 
-function authorize(req: Request, res: Response, next: NextFunction): void {
+function authorize(req: Request, res: ExpressResponse, next: NextFunction): void {
   const auth = req.get('authorization');
   const token = auth?.startsWith('Bearer ')
     ? auth.slice(7)
