@@ -78,16 +78,53 @@ VidBlitz asset library.
 
 ## Authentication
 
-Today the production MCP and REST API use a static API key:
+The canonical MCP endpoint supports two authentication paths without changing
+the tool or project model.
+
+### Service API key
+
+VidBlitz, backend jobs, scripts, Codex/Claude configurations that can store a
+secret, and other server-to-server clients can continue to use:
 
 ```http
 Authorization: Bearer <SERVICE_API_KEY>
 ```
 
-`X-API-Key` is also accepted for REST/MCP HTTP clients.
+`X-API-Key` is also accepted for service-key MCP clients and the REST API.
+OAuth access tokens are intentionally **not** accepted on `/v1`; REST remains
+service-to-service.
 
-OAuth can be added later in front of the same canonical `/mcp` endpoint for
-user-facing integrations without changing the project/render architecture.
+### OAuth 2.1 + PKCE
+
+User-facing MCP hosts such as ChatGPT can discover and authorize against the
+same endpoint:
+
+```text
+https://<api-domain>/mcp
+```
+
+The API publishes:
+
+```text
+/.well-known/oauth-protected-resource
+/.well-known/oauth-protected-resource/mcp
+/.well-known/oauth-authorization-server
+/oauth/authorize
+/oauth/token
+/oauth/register
+/oauth/revoke
+```
+
+The flow uses Authorization Code + PKCE S256, resource indicators bound to the
+canonical MCP URL, RFC 9207 issuer responses, short-lived opaque access tokens,
+rotating refresh tokens, Client ID Metadata Documents (CIMD) as the preferred
+client identity mechanism, and Dynamic Client Registration (DCR) as a
+compatibility fallback.
+
+There is still no Excalimate user/tenant model. The OAuth authorization page
+uses a separate operator password (`OAUTH_LOGIN_PASSWORD`) and a signed
+HttpOnly authorization-session cookie. Do not reuse `SERVICE_API_KEY` as that
+password.
 
 ## Image workflow
 
