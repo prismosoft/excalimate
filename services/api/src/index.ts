@@ -26,6 +26,7 @@ import {
   type CheckpointStore,
   type ServerState,
 } from '../../../mcp-server/dist/library.js';
+import { createOAuthSupport } from './oauth.js';
 
 const PORT = integerEnv('PORT', 3000);
 const DATABASE_URL = requiredEnv('DATABASE_URL');
@@ -46,7 +47,25 @@ const MCP_MAX_STATE_BYTES = integerEnv(
   'MCP_MAX_STATE_BYTES',
   20 * 1024 * 1024,
 );
-const PUBLIC_BASE_URL = process.env.PUBLIC_BASE_URL?.replace(/\/$/, '');
+const PUBLIC_BASE_URL = requiredEnv('PUBLIC_BASE_URL').replace(/\/$/, '');
+const OAUTH_LOGIN_PASSWORD = requiredEnv('OAUTH_LOGIN_PASSWORD');
+const OAUTH_SESSION_SECRET = requiredEnv('OAUTH_SESSION_SECRET');
+const OAUTH_ACCESS_TOKEN_TTL_SECONDS = integerEnv(
+  'OAUTH_ACCESS_TOKEN_TTL_SECONDS',
+  3600,
+);
+const OAUTH_REFRESH_TOKEN_TTL_SECONDS = integerEnv(
+  'OAUTH_REFRESH_TOKEN_TTL_SECONDS',
+  30 * 24 * 3600,
+);
+const OAUTH_AUTH_CODE_TTL_SECONDS = integerEnv(
+  'OAUTH_AUTH_CODE_TTL_SECONDS',
+  300,
+);
+const OAUTH_SESSION_TTL_SECONDS = integerEnv(
+  'OAUTH_SESSION_TTL_SECONDS',
+  30 * 24 * 3600,
+);
 const PG_POOL_MAX = integerEnv('PG_POOL_MAX', 5);
 const PGBOSS_POOL_MAX = integerEnv('PGBOSS_POOL_MAX', 4);
 const TEMP_PROJECT_TTL_HOURS = nonNegativeIntegerEnv('TEMP_PROJECT_TTL_HOURS', 24);
@@ -67,6 +86,17 @@ const boss = new PgBoss({
   application_name: 'excalimate-api-boss',
 });
 const s3 = createS3Client();
+const oauth = createOAuthSupport({
+  pool,
+  issuer: PUBLIC_BASE_URL,
+  resource: `${PUBLIC_BASE_URL}/mcp`,
+  loginPassword: OAUTH_LOGIN_PASSWORD,
+  sessionSecret: OAUTH_SESSION_SECRET,
+  accessTokenTtlSeconds: OAUTH_ACCESS_TOKEN_TTL_SECONDS,
+  refreshTokenTtlSeconds: OAUTH_REFRESH_TOKEN_TTL_SECONDS,
+  authorizationCodeTtlSeconds: OAUTH_AUTH_CODE_TTL_SECONDS,
+  sessionTtlSeconds: OAUTH_SESSION_TTL_SECONDS,
+});
 
 const app = express();
 app.disable('x-powered-by');
@@ -83,22 +113,55 @@ app.get('/healthz', async (_req, res) => {
   }
 });
 
-function authorize(req: Request, res: ExpressResponse, next: NextFunction): void {
+function serviceApiKey(req: Request): string | undefined {
   const auth = req.get('authorization');
-  const token = auth?.startsWith('Bearer ')
+  return auth?.startsWith('Bearer ')
     ? auth.slice(7)
     : req.get('x-api-key');
+}
 
+function authorizeServiceApiKey(
+  req: Request,
+  res: ExpressResponse,
+  next: NextFunction,
+): void {
+  const token = serviceApiKey(req);
   if (token && safeEqual(token, SERVICE_API_KEY)) {
     next();
     return;
   }
-
   res.status(401).json({ error: 'unauthorized' });
 }
 
-app.use('/v1', authorize);
-app.use('/mcp', authorize);
+function authorizeMcp(
+  req: Request,
+  res: ExpressResponse,
+  next: NextFunction,
+): void {
+  void (async () => {
+    const auth = req.get('authorization');
+    const bearer = auth?.startsWith('Bearer ') ? auth.slice(7) : undefined;
+    const apiKey = req.get('x-api-key');
+    const staticToken = bearer ?? apiKey;
+
+    if (staticToken && safeEqual(staticToken, SERVICE_API_KEY)) {
+      next();
+      return;
+    }
+
+    if (bearer && await oauth.validateAccessToken(bearer)) {
+      next();
+      return;
+    }
+
+    oauth.challenge(res, bearer ? 'invalid_token' : undefined);
+    res.status(401).json({ error: 'unauthorized' });
+  })().catch(next);
+}
+
+app.use(oauth.router);
+app.use('/v1', authorizeServiceApiKey);
+app.use('/mcp', authorizeMcp);
 
 const projectCreateSchema = z.object({
   name: z.string().min(1).max(256).optional(),
@@ -393,6 +456,7 @@ app.use(
 
 async function main(): Promise<void> {
   await initSchema();
+  await oauth.initSchema();
 
   boss.on('error', (error) => {
     console.error('[pg-boss]', error);
@@ -411,22 +475,26 @@ async function main(): Promise<void> {
     console.log(`[excalimate-api] listening on :${PORT}`);
   });
 
-  let cleanupTimer: NodeJS.Timeout | undefined;
-  if (TEMP_PROJECT_TTL_HOURS > 0) {
-    const intervalMs = PROJECT_CLEANUP_INTERVAL_MINUTES * 60_000;
-    cleanupTimer = setInterval(() => {
-      void cleanupExpiredProjects().catch((error) => {
-        console.error('[excalimate-cleanup]', error);
-      });
-    }, intervalMs);
-    cleanupTimer.unref();
-    void cleanupExpiredProjects().catch((error) => {
+  const cleanupMaintenance = async () => {
+    if (TEMP_PROJECT_TTL_HOURS > 0) {
+      await cleanupExpiredProjects();
+    }
+    await oauth.cleanup();
+  };
+
+  const intervalMs = PROJECT_CLEANUP_INTERVAL_MINUTES * 60_000;
+  const cleanupTimer = setInterval(() => {
+    void cleanupMaintenance().catch((error) => {
       console.error('[excalimate-cleanup]', error);
     });
-  }
+  }, intervalMs);
+  cleanupTimer.unref();
+  void cleanupMaintenance().catch((error) => {
+    console.error('[excalimate-cleanup]', error);
+  });
 
   const shutdown = async () => {
-    if (cleanupTimer) clearInterval(cleanupTimer);
+    clearInterval(cleanupTimer);
     server.close();
     await boss.stop({ graceful: true, timeout: 30_000 }).catch(() => undefined);
     await pool.end().catch(() => undefined);
@@ -1464,13 +1532,8 @@ function bucketName(): string {
   return requiredEnv('BUCKET');
 }
 
-function baseUrl(req: Request): string {
-  if (PUBLIC_BASE_URL) return PUBLIC_BASE_URL;
-
-  const proto =
-    req.get('x-forwarded-proto')?.split(',')[0]?.trim() ||
-    req.protocol;
-  return `${proto}://${req.get('host')}`;
+function baseUrl(_req: Request): string {
+  return PUBLIC_BASE_URL;
 }
 
 function routeParam(req: Request, name: string): string {

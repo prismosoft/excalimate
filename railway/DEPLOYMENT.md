@@ -58,6 +58,9 @@ Required variables:
 ```text
 DATABASE_URL
 SERVICE_API_KEY
+PUBLIC_BASE_URL
+OAUTH_LOGIN_PASSWORD
+OAUTH_SESSION_SECRET
 BUCKET
 ACCESS_KEY_ID
 SECRET_ACCESS_KEY
@@ -69,6 +72,10 @@ Recommended:
 
 ```text
 PUBLIC_BASE_URL=https://your-api-domain
+OAUTH_ACCESS_TOKEN_TTL_SECONDS=3600
+OAUTH_REFRESH_TOKEN_TTL_SECONDS=2592000
+OAUTH_AUTH_CODE_TTL_SECONDS=300
+OAUTH_SESSION_TTL_SECONDS=2592000
 PG_POOL_MAX=5
 PGBOSS_POOL_MAX=4
 RENDER_QUEUE=excalimate-render
@@ -144,11 +151,20 @@ MCP-capable agent:
 https://your-api-domain/mcp
 ```
 
-Authenticate with:
+For controlled server-to-server clients such as VidBlitz, authenticate with:
 
 ```http
 Authorization: Bearer <SERVICE_API_KEY>
 ```
+
+For ChatGPT or another interactive OAuth-capable MCP host, configure only the
+canonical MCP URL. The client discovers OAuth from the protected-resource and
+authorization-server metadata endpoints, opens the Excalimate authorization
+page, performs Authorization Code + PKCE S256, then sends the resulting
+short-lived bearer access token to the same `/mcp` endpoint.
+
+The operator authorization password is `OAUTH_LOGIN_PASSWORD`; it is
+independent from `SERVICE_API_KEY`.
 
 The first tool call for a new animation is normally `create_project`. The
 returned `projectId` is supplied to every project-specific native Excalimate
