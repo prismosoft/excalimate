@@ -17,7 +17,8 @@ export interface OAuthSupportOptions {
   pool: Pool;
   issuer: string;
   resource: string;
-  loginPassword: string;
+  loginPassword?: string;
+  loginPasswordHash?: string;
   sessionSecret: string;
   accessTokenTtlSeconds?: number;
   refreshTokenTtlSeconds?: number;
@@ -152,7 +153,11 @@ export function createOAuthSupport(options: OAuthSupportOptions): OAuthSupport {
     if (!hasValidSession(req, options.sessionSecret)) {
       enforceLoginRateLimit(req, loginAttempts);
       const password = formString(req.body, 'password', 4096);
-      if (!password || !safeEqual(password, options.loginPassword)) {
+      if (!password || !verifyAuthorizationPassword(
+        password,
+        options.loginPasswordHash,
+        options.loginPassword,
+      )) {
         recordFailedLogin(req, loginAttempts);
         res
           .status(401)
@@ -1078,6 +1083,26 @@ function isScopeSubset(requested: string, granted: string): boolean {
 
 function scopeSet(scope: string): Set<string> {
   return new Set(scope.split(/\s+/).filter(Boolean));
+}
+
+export function verifyAuthorizationPassword(
+  password: string,
+  passwordHash?: string,
+  legacyPassword?: string,
+): boolean {
+  if (passwordHash) {
+    const normalized = passwordHash.trim().toLowerCase();
+    if (!/^[a-f0-9]{64}$/.test(normalized)) {
+      throw new Error('OAUTH_LOGIN_PASSWORD_SHA256 must be a 64-character SHA-256 hex digest');
+    }
+    const actual = crypto
+      .createHash('sha256')
+      .update(password, 'utf8')
+      .digest('hex');
+    return safeEqual(actual, normalized);
+  }
+
+  return Boolean(legacyPassword && safeEqual(password, legacyPassword));
 }
 
 export function verifyPkceS256(
