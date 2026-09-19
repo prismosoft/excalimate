@@ -48,7 +48,14 @@ const MCP_MAX_STATE_BYTES = integerEnv(
   20 * 1024 * 1024,
 );
 const PUBLIC_BASE_URL = requiredEnv('PUBLIC_BASE_URL').replace(/\/$/, '');
-const OAUTH_LOGIN_PASSWORD = requiredEnv('OAUTH_LOGIN_PASSWORD');
+const OAUTH_LOGIN_PASSWORD = process.env.OAUTH_LOGIN_PASSWORD;
+const OAUTH_LOGIN_PASSWORD_SHA256 =
+  process.env.OAUTH_LOGIN_PASSWORD_SHA256?.trim().toLowerCase();
+if (!OAUTH_LOGIN_PASSWORD && !OAUTH_LOGIN_PASSWORD_SHA256) {
+  throw new Error(
+    'Missing OAUTH_LOGIN_PASSWORD_SHA256 (preferred) or OAUTH_LOGIN_PASSWORD',
+  );
+}
 const OAUTH_SESSION_SECRET = requiredEnv('OAUTH_SESSION_SECRET');
 const OAUTH_ACCESS_TOKEN_TTL_SECONDS = integerEnv(
   'OAUTH_ACCESS_TOKEN_TTL_SECONDS',
@@ -91,6 +98,7 @@ const oauth = createOAuthSupport({
   issuer: PUBLIC_BASE_URL,
   resource: `${PUBLIC_BASE_URL}/mcp`,
   loginPassword: OAUTH_LOGIN_PASSWORD,
+  loginPasswordHash: OAUTH_LOGIN_PASSWORD_SHA256,
   sessionSecret: OAUTH_SESSION_SECRET,
   accessTokenTtlSeconds: OAUTH_ACCESS_TOKEN_TTL_SECONDS,
   refreshTokenTtlSeconds: OAUTH_REFRESH_TOKEN_TTL_SECONDS,
