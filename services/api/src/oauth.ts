@@ -286,7 +286,7 @@ export function createOAuthSupport(options: OAuthSupportOptions): OAuthSupport {
 
   router.use((
     error: unknown,
-    _req: Request,
+    req: Request,
     res: ExpressResponse,
     next: NextFunction,
   ) => {
@@ -294,6 +294,18 @@ export function createOAuthSupport(options: OAuthSupportOptions): OAuthSupport {
       next(error);
       return;
     }
+
+    if (req.path === '/oauth/authorize' || req.path === '/authorize') {
+      void tryAuthorizationErrorRedirect(
+        options.pool,
+        req,
+        res,
+        error,
+        issuer,
+      ).catch(next);
+      return;
+    }
+
     res.status(error.status).json({
       error: error.code,
       error_description: error.message,
@@ -394,6 +406,42 @@ export function createOAuthSupport(options: OAuthSupportOptions): OAuthSupport {
       res.set('WWW-Authenticate', fields.join(', '));
     },
   };
+}
+
+async function tryAuthorizationErrorRedirect(
+  pool: Pool,
+  req: Request,
+  res: ExpressResponse,
+  error: OAuthProtocolError,
+  issuer: string,
+): Promise<void> {
+  const source = req.method === 'GET' ? objectLike(req.query) : objectLike(req.body);
+  const clientId = formString(source, 'client_id', 2048);
+  const redirectUri = formString(source, 'redirect_uri', 4096);
+  const state = formString(source, 'state', 2048);
+
+  if (clientId && redirectUri) {
+    try {
+      const client = await resolveOAuthClient(pool, clientId);
+      if (client.redirectUris.includes(redirectUri)) {
+        const redirect = new URL(redirectUri);
+        redirect.searchParams.set('error', error.code);
+        redirect.searchParams.set('error_description', error.message);
+        if (state) redirect.searchParams.set('state', state);
+        redirect.searchParams.set('iss', issuer);
+        res.redirect(302, redirect.toString());
+        return;
+      }
+    } catch {
+      // An invalid client/redirect URI must never receive an authorization redirect.
+    }
+  }
+
+  res.status(error.status).json({
+    error: error.code,
+    error_description: error.message,
+    iss: issuer,
+  });
 }
 
 async function parseAuthorizationRequest(
@@ -1211,9 +1259,6 @@ function clearFailedLogin(
   attempts.delete(req.ip || 'unknown');
 }
 
-function parseDynamicValue(value: unknown): Record<string, unknown> {
-  return objectLike(value);
-}
 
 function objectLike(value: unknown): Record<string, unknown> {
   if (!value || typeof value !== 'object' || Array.isArray(value)) {
