@@ -7,6 +7,7 @@ import {
   normalizeScope,
   signAuthorizationSession,
   validateRedirectUri,
+  verifyAuthorizationPassword,
   verifyAuthorizationSession,
   verifyPkceS256,
 } from '../dist/oauth.js';
@@ -134,5 +135,27 @@ test('Bearer challenge uses auth-scheme followed by auth parameters', () => {
   assert.equal(
     headers.get('www-authenticate'),
     'Bearer resource_metadata="https://api.example.com/.well-known/oauth-protected-resource", scope="mcp"',
+  );
+});
+
+
+test('authorization password prefers SHA-256 hash and supports legacy fallback', () => {
+  const password = 'Excalimate-test-password';
+  const hash = createHash('sha256').update(password, 'utf8').digest('hex');
+
+  assert.equal(
+    verifyAuthorizationPassword(password, hash, 'wrong-legacy-password'),
+    true,
+  );
+  assert.equal(
+    verifyAuthorizationPassword('wrong-password', hash, password),
+    false,
+  );
+  assert.equal(
+    verifyAuthorizationPassword(password, undefined, password),
+    true,
+  );
+  assert.throws(() =>
+    verifyAuthorizationPassword(password, 'not-a-valid-hash', password),
   );
 });

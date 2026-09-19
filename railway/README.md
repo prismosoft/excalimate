@@ -122,9 +122,11 @@ client identity mechanism, and Dynamic Client Registration (DCR) as a
 compatibility fallback.
 
 There is still no Excalimate user/tenant model. The OAuth authorization page
-uses a separate operator password (`OAUTH_LOGIN_PASSWORD`) and a signed
-HttpOnly authorization-session cookie. Do not reuse `SERVICE_API_KEY` as that
-password.
+uses a separate operator password and a signed HttpOnly authorization-session
+cookie. In production, store the password as the SHA-256 hex digest in
+`OAUTH_LOGIN_PASSWORD_SHA256`. The legacy plaintext `OAUTH_LOGIN_PASSWORD`
+remains supported only as a fallback and is ignored when the hash is present.
+Do not reuse `SERVICE_API_KEY` as the OAuth password.
 
 ## Image workflow
 
