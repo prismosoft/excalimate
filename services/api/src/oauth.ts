@@ -84,7 +84,7 @@ export function createOAuthSupport(options: OAuthSupportOptions): OAuthSupport {
   const refreshTokenTtlSeconds = options.refreshTokenTtlSeconds ?? 30 * 24 * 3600;
   const authorizationCodeTtlSeconds = options.authorizationCodeTtlSeconds ?? 300;
   const sessionTtlSeconds = options.sessionTtlSeconds ?? 30 * 24 * 3600;
-  const metadataUrl = \`\${issuer}/.well-known/oauth-protected-resource\`;
+  const metadataUrl = `${issuer}/.well-known/oauth-protected-resource`;
   const router = express.Router();
   const loginAttempts = new Map<string, { count: number; resetAt: number }>();
 
@@ -101,10 +101,10 @@ export function createOAuthSupport(options: OAuthSupportOptions): OAuthSupport {
   const authorizationServerMetadata = {
     issuer,
     authorization_response_iss_parameter_supported: true,
-    authorization_endpoint: \`\${issuer}/oauth/authorize\`,
-    token_endpoint: \`\${issuer}/oauth/token\`,
-    registration_endpoint: \`\${issuer}/oauth/register\`,
-    revocation_endpoint: \`\${issuer}/oauth/revoke\`,
+    authorization_endpoint: `${issuer}/oauth/authorize`,
+    token_endpoint: `${issuer}/oauth/token`,
+    registration_endpoint: `${issuer}/oauth/register`,
+    revocation_endpoint: `${issuer}/oauth/revoke`,
     client_id_metadata_document_supported: true,
     response_types_supported: ['code'],
     response_modes_supported: ['query'],
@@ -189,11 +189,11 @@ export function createOAuthSupport(options: OAuthSupportOptions): OAuthSupport {
 
   const registerHandler = asyncHandler(async (req, res) => {
     const input = parseDynamicClientRegistration(req.body);
-    const clientId = \`mcp_client_\${randomToken(24)}\`;
+    const clientId = `mcp_client_${randomToken(24)}`;
     await options.pool.query(
-      \`insert into excalimate_oauth_clients
+      `insert into excalimate_oauth_clients
          (client_id, redirect_uris, client_name, metadata)
-       values ($1, $2::jsonb, $3, $4::jsonb)\`,
+       values ($1, $2::jsonb, $3, $4::jsonb)`,
       [
         clientId,
         JSON.stringify(input.redirectUris),
@@ -271,11 +271,11 @@ export function createOAuthSupport(options: OAuthSupportOptions): OAuthSupport {
     if (token) {
       const hash = hashToken(token);
       await options.pool.query(
-        \`update excalimate_oauth_tokens
+        `update excalimate_oauth_tokens
             set revoked_at = coalesce(revoked_at, now()),
                 updated_at = now()
           where access_token_hash = $1
-             or refresh_token_hash = $1\`,
+             or refresh_token_hash = $1`,
         [hash],
       );
     }
@@ -315,7 +315,7 @@ export function createOAuthSupport(options: OAuthSupportOptions): OAuthSupport {
   return {
     router,
     initSchema: async () => {
-      await options.pool.query(\`
+      await options.pool.query(`
         create table if not exists excalimate_oauth_clients (
           client_id text primary key,
           redirect_uris jsonb not null,
@@ -358,18 +358,18 @@ export function createOAuthSupport(options: OAuthSupportOptions): OAuthSupport {
 
         create index if not exists excalimate_oauth_tokens_refresh_expiry_idx
           on excalimate_oauth_tokens(refresh_expires_at);
-      \`);
+      `);
     },
     cleanup: async () => {
       await options.pool.query(
-        \`delete from excalimate_oauth_codes
+        `delete from excalimate_oauth_codes
           where expires_at < now() - interval '1 hour'
-             or used_at < now() - interval '1 hour'\`,
+             or used_at < now() - interval '1 hour'`,
       );
       await options.pool.query(
-        \`delete from excalimate_oauth_tokens
+        `delete from excalimate_oauth_tokens
           where refresh_expires_at < now() - interval '1 day'
-             or revoked_at < now() - interval '1 day'\`,
+             or revoked_at < now() - interval '1 day'`,
       );
       const now = Date.now();
       for (const [key, attempt] of loginAttempts) {
@@ -381,12 +381,12 @@ export function createOAuthSupport(options: OAuthSupportOptions): OAuthSupport {
         scope: string;
         resource: string;
       }>(
-        \`select scope, resource
+        `select scope, resource
            from excalimate_oauth_tokens
           where access_token_hash = $1
             and revoked_at is null
             and expires_at > now()
-          limit 1\`,
+          limit 1`,
         [hashToken(token)],
       );
       const row = rows[0];
@@ -399,10 +399,10 @@ export function createOAuthSupport(options: OAuthSupportOptions): OAuthSupport {
     challenge: (res, error) => {
       const fields = [
         'Bearer',
-        \`resource_metadata="\${metadataUrl}"\`,
-        \`scope="\${OAUTH_SCOPE}"\`,
+        `resource_metadata="${metadataUrl}"`,
+        `scope="${OAUTH_SCOPE}"`,
       ];
-      if (error) fields.push(\`error="\${error}"\`);
+      if (error) fields.push(`error="${error}"`);
       res.set('WWW-Authenticate', fields.join(', '));
     },
   };
@@ -509,12 +509,12 @@ async function issueAuthorizationCodeAndRedirect(
   ttlSeconds: number,
   res: ExpressResponse,
 ): Promise<void> {
-  const code = \`exa_code_\${randomToken(32)}\`;
+  const code = `exa_code_${randomToken(32)}`;
   await pool.query(
-    \`insert into excalimate_oauth_codes
+    `insert into excalimate_oauth_codes
        (code_hash, client_id, redirect_uri, code_challenge, scope, resource, expires_at)
      values
-       ($1, $2, $3, $4, $5, $6, now() + ($7::double precision * interval '1 second'))\`,
+       ($1, $2, $3, $4, $5, $6, now() + ($7::double precision * interval '1 second'))`,
     [
       hashToken(code),
       request.clientId,
@@ -558,11 +558,11 @@ async function exchangeAuthorizationCode(
   try {
     await client.query('begin');
     const { rows } = await client.query<AuthorizationCodeRow>(
-      \`select client_id, redirect_uri, code_challenge, scope, resource,
+      `select client_id, redirect_uri, code_challenge, scope, resource,
               expires_at, used_at
          from excalimate_oauth_codes
         where code_hash = $1
-        for update\`,
+        for update`,
       [hashToken(code)],
     );
     const row = rows[0];
@@ -582,9 +582,9 @@ async function exchangeAuthorizationCode(
     }
 
     await client.query(
-      \`update excalimate_oauth_codes
+      `update excalimate_oauth_codes
           set used_at = now()
-        where code_hash = $1\`,
+        where code_hash = $1`,
       [hashToken(code)],
     );
 
@@ -631,10 +631,10 @@ async function exchangeRefreshToken(
   try {
     await client.query('begin');
     const { rows } = await client.query<OAuthTokenRow>(
-      \`select client_id, scope, resource, expires_at, refresh_expires_at, revoked_at
+      `select client_id, scope, resource, expires_at, refresh_expires_at, revoked_at
          from excalimate_oauth_tokens
         where refresh_token_hash = $1
-        for update\`,
+        for update`,
       [hashToken(refreshToken)],
     );
     const row = rows[0];
@@ -660,17 +660,17 @@ async function exchangeRefreshToken(
       );
     }
 
-    const accessToken = \`exa_at_\${randomToken(32)}\`;
-    const nextRefreshToken = \`exa_rt_\${randomToken(40)}\`;
+    const accessToken = `exa_at_${randomToken(32)}`;
+    const nextRefreshToken = `exa_rt_${randomToken(40)}`;
     await client.query(
-      \`update excalimate_oauth_tokens
+      `update excalimate_oauth_tokens
           set access_token_hash = $1,
               refresh_token_hash = $2,
               scope = $3,
               expires_at = now() + ($4::double precision * interval '1 second'),
               refresh_expires_at = now() + ($5::double precision * interval '1 second'),
               updated_at = now()
-        where refresh_token_hash = $6\`,
+        where refresh_token_hash = $6`,
       [
         hashToken(accessToken),
         hashToken(nextRefreshToken),
@@ -708,17 +708,17 @@ async function issueTokenPair(
   accessTokenTtlSeconds: number,
   refreshTokenTtlSeconds: number,
 ): Promise<Record<string, unknown>> {
-  const accessToken = \`exa_at_\${randomToken(32)}\`;
-  const refreshToken = \`exa_rt_\${randomToken(40)}\`;
+  const accessToken = `exa_at_${randomToken(32)}`;
+  const refreshToken = `exa_rt_${randomToken(40)}`;
 
   await client.query(
-    \`insert into excalimate_oauth_tokens
+    `insert into excalimate_oauth_tokens
        (access_token_hash, refresh_token_hash, client_id, scope, resource,
         expires_at, refresh_expires_at)
      values
        ($1, $2, $3, $4, $5,
         now() + ($6::double precision * interval '1 second'),
-        now() + ($7::double precision * interval '1 second'))\`,
+        now() + ($7::double precision * interval '1 second'))`,
     [
       hashToken(accessToken),
       hashToken(refreshToken),
@@ -753,10 +753,10 @@ async function resolveOAuthClient(
     redirect_uris: unknown;
     client_name: string | null;
   }>(
-    \`select client_id, redirect_uris, client_name
+    `select client_id, redirect_uris, client_name
        from excalimate_oauth_clients
       where client_id = $1
-      limit 1\`,
+      limit 1`,
     [clientId],
   );
   const row = rows[0];
@@ -1069,7 +1069,7 @@ export function normalizeScope(raw?: string): string {
   if (unique.length !== 1 || unique[0] !== OAUTH_SCOPE) {
     throw new OAuthProtocolError(
       'invalid_scope',
-      \`Supported scope: \${OAUTH_SCOPE}\`,
+      `Supported scope: ${OAUTH_SCOPE}`,
     );
   }
   return OAUTH_SCOPE;
@@ -1108,7 +1108,7 @@ export function signAuthorizationSession(
     .createHmac('sha256', secret)
     .update(payload)
     .digest('base64url');
-  return \`\${payload}.\${signature}\`;
+  return `${payload}.${signature}`;
 }
 
 export function verifyAuthorizationSession(
@@ -1147,7 +1147,7 @@ function setSessionCookie(
   const value = signAuthorizationSession(secret, ttlSeconds);
   res.set(
     'Set-Cookie',
-    \`\${AUTH_SESSION_COOKIE}=\${value}; Path=/oauth; Max-Age=\${ttlSeconds}; HttpOnly; Secure; SameSite=Lax\`,
+    `${AUTH_SESSION_COOKIE}=${value}; Path=/oauth; Max-Age=${ttlSeconds}; HttpOnly; Secure; SameSite=Lax`,
   );
 }
 
@@ -1183,11 +1183,11 @@ function renderAuthorizationPage(
     .filter(([, value]) => value !== undefined)
     .map(
       ([name, value]) =>
-        \`<input type="hidden" name="\${htmlEscape(name)}" value="\${htmlEscape(value!)}">\`,
+        `<input type="hidden" name="${htmlEscape(name)}" value="${htmlEscape(value!)}">`,
     )
     .join('');
 
-  return \`<!doctype html>
+  return `<!doctype html>
 <html lang="en">
 <head>
 <meta charset="utf-8">
@@ -1197,11 +1197,11 @@ function renderAuthorizationPage(
 <body>
 <main>
 <h1>Authorize Excalimate MCP</h1>
-<p>Client: <strong>\${htmlEscape(clientName ?? request.clientId)}</strong></p>
+<p>Client: <strong>${htmlEscape(clientName ?? request.clientId)}</strong></p>
 <p>This grants access to create temporary animation projects, edit scenes, and render videos through Excalimate.</p>
-\${invalidPassword ? '<p role="alert">Invalid authorization password.</p>' : ''}
+${invalidPassword ? '<p role="alert">Invalid authorization password.</p>' : ''}
 <form method="post" action="/oauth/authorize">
-\${hidden}
+${hidden}
 <label>Excalimate authorization password
 <input type="password" name="password" autocomplete="current-password" required autofocus>
 </label>
@@ -1209,7 +1209,7 @@ function renderAuthorizationPage(
 </form>
 </main>
 </body>
-</html>\`;
+</html>`;
 }
 
 function htmlEscape(value: string): string {
@@ -1276,7 +1276,7 @@ function formString(
   const value = object[name];
   if (typeof value !== 'string') return undefined;
   if (value.length > maxLength) {
-    throw new OAuthProtocolError('invalid_request', \`\${name} is too long.\`);
+    throw new OAuthProtocolError('invalid_request', `${name} is too long.`);
   }
   return value;
 }
@@ -1288,7 +1288,7 @@ function requiredFormString(
 ): string {
   const value = formString(source, name, maxLength);
   if (!value) {
-    throw new OAuthProtocolError('invalid_request', \`\${name} is required.\`);
+    throw new OAuthProtocolError('invalid_request', `${name} is required.`);
   }
   return value;
 }
@@ -1296,7 +1296,7 @@ function requiredFormString(
 function canonicalHttpsUrl(value: string, label: string): string {
   const url = new URL(value);
   if (url.protocol !== 'https:' || url.username || url.password || url.hash) {
-    throw new Error(\`OAuth \${label} must be an HTTPS URL\`);
+    throw new Error(`OAuth ${label} must be an HTTPS URL`);
   }
   return value.replace(/\/$/, '');
 }
