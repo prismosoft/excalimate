@@ -66,6 +66,9 @@ jobs:
       - name: Build API
         working-directory: services/api
         run: npm run build
+      - name: Test API OAuth
+        working-directory: services/api
+        run: npm test
 
   worker:
     name: Render worker typecheck/build
