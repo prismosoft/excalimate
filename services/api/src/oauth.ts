@@ -130,23 +130,19 @@ export function createOAuthSupport(options: OAuthSupportOptions): OAuthSupport {
 
   const authorizeGet = asyncHandler(async (req, res) => {
     const request = await parseAuthorizationRequest(req.query, resource, options.pool);
-
-    if (hasValidSession(req, options.sessionSecret)) {
-      await issueAuthorizationCodeAndRedirect(
-        options.pool,
-        request,
-        issuer,
-        authorizationCodeTtlSeconds,
-        res,
-      );
-      return;
-    }
-
     const client = await resolveOAuthClient(options.pool, request.clientId);
+    const authenticated = hasValidSession(req, options.sessionSecret);
     res
       .status(200)
       .type('html')
-      .send(renderAuthorizationPage(request, client.clientName, false));
+      .send(
+        renderAuthorizationPage(
+          request,
+          client.clientName,
+          false,
+          authenticated,
+        ),
+      );
   });
 
   const authorizePost = asyncHandler(async (req, res) => {
@@ -161,7 +157,7 @@ export function createOAuthSupport(options: OAuthSupportOptions): OAuthSupport {
         res
           .status(401)
           .type('html')
-          .send(renderAuthorizationPage(request, client.clientName, true));
+          .send(renderAuthorizationPage(request, client.clientName, true, false));
         return;
       }
       clearFailedLogin(req, loginAttempts);
@@ -1168,6 +1164,7 @@ function renderAuthorizationPage(
   request: AuthorizationRequest,
   clientName: string | undefined,
   invalidPassword: boolean,
+  authenticated: boolean,
 ): string {
   const fields: Array<[string, string | undefined]> = [
     ['response_type', 'code'],
@@ -1202,9 +1199,9 @@ function renderAuthorizationPage(
 ${invalidPassword ? '<p role="alert">Invalid authorization password.</p>' : ''}
 <form method="post" action="/oauth/authorize">
 ${hidden}
-<label>Excalimate authorization password
-<input type="password" name="password" autocomplete="current-password" required autofocus>
-</label>
+${authenticated
+  ? '<p>You are signed in to Excalimate authorization.</p>'
+  : '<label>Excalimate authorization password<input type="password" name="password" autocomplete="current-password" required autofocus></label>'}
 <button type="submit">Authorize</button>
 </form>
 </main>
