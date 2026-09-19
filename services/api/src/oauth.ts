@@ -393,13 +393,12 @@ export function createOAuthSupport(options: OAuthSupportOptions): OAuthSupport {
       );
     },
     challenge: (res, error) => {
-      const fields = [
-        'Bearer',
+      const params = [
         `resource_metadata="${metadataUrl}"`,
         `scope="${OAUTH_SCOPE}"`,
       ];
-      if (error) fields.push(`error="${error}"`);
-      res.set('WWW-Authenticate', fields.join(', '));
+      if (error) params.push(`error="${error}"`);
+      res.set('WWW-Authenticate', `Bearer ${params.join(', ')}`);
     },
   };
 }
