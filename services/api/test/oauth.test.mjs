@@ -105,3 +105,34 @@ test('OAuth discovery publishes MCP resource, PKCE and CIMD support', async () =
     });
   }
 });
+
+
+test('Bearer challenge uses auth-scheme followed by auth parameters', () => {
+  const fakePool = {
+    query: async () => ({ rows: [], rowCount: 0 }),
+    connect: async () => {
+      throw new Error('not used');
+    },
+  };
+  const oauth = createOAuthSupport({
+    pool: fakePool,
+    issuer: 'https://api.example.com',
+    resource: 'https://api.example.com/mcp',
+    loginPassword: 'login-password',
+    sessionSecret: 'session-secret',
+  });
+
+  const headers = new Map();
+  const fakeResponse = {
+    set(name, value) {
+      headers.set(name.toLowerCase(), value);
+      return this;
+    },
+  };
+
+  oauth.challenge(fakeResponse);
+  assert.equal(
+    headers.get('www-authenticate'),
+    'Bearer resource_metadata="https://api.example.com/.well-known/oauth-protected-resource", scope="mcp"',
+  );
+});
