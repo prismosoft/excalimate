@@ -59,7 +59,7 @@ Required variables:
 DATABASE_URL
 SERVICE_API_KEY
 PUBLIC_BASE_URL
-OAUTH_LOGIN_PASSWORD
+OAUTH_LOGIN_PASSWORD_SHA256
 OAUTH_SESSION_SECRET
 BUCKET
 ACCESS_KEY_ID
@@ -163,8 +163,9 @@ authorization-server metadata endpoints, opens the Excalimate authorization
 page, performs Authorization Code + PKCE S256, then sends the resulting
 short-lived bearer access token to the same `/mcp` endpoint.
 
-The operator authorization password is `OAUTH_LOGIN_PASSWORD`; it is
-independent from `SERVICE_API_KEY`.
+The operator authorization password is independent from `SERVICE_API_KEY`.
+Store its SHA-256 hex digest in `OAUTH_LOGIN_PASSWORD_SHA256`. A plaintext
+`OAUTH_LOGIN_PASSWORD` is supported only as a legacy fallback.
 
 The first tool call for a new animation is normally `create_project`. The
 returned `projectId` is supplied to every project-specific native Excalimate
