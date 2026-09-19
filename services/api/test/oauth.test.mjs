@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { createHash } from 'node:crypto';
 import test from 'node:test';
 import express from 'express';
 import {
@@ -12,11 +13,9 @@ import {
 
 test('PKCE S256 verification matches RFC-style verifier/challenge', () => {
   const verifier = 'abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-._~abc';
-  const challenge = Buffer.from(
-    await import('node:crypto').then(({ createHash }) =>
-      createHash('sha256').update(verifier, 'ascii').digest(),
-    ),
-  ).toString('base64url');
+  const challenge = createHash('sha256')
+    .update(verifier, 'ascii')
+    .digest('base64url');
   assert.equal(verifyPkceS256(verifier, challenge), true);
   assert.equal(verifyPkceS256(verifier, challenge.slice(0, -1) + 'A'), false);
 });
