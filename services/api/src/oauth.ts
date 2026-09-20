@@ -130,9 +130,11 @@ export function createOAuthSupport(options: OAuthSupportOptions): OAuthSupport {
   });
 
   const authorizeGet = asyncHandler(async (req, res) => {
+    prepareAuthorizationBrowserResponse(res);
     const request = await parseAuthorizationRequest(req.query, resource, options.pool);
     const client = await resolveOAuthClient(options.pool, request.clientId);
     const authenticated = hasValidSession(req, options.sessionSecret);
+    logOAuthHandoff('authorize_page', request, client, authenticated);
     res
       .status(200)
       .type('html')
@@ -147,6 +149,7 @@ export function createOAuthSupport(options: OAuthSupportOptions): OAuthSupport {
   });
 
   const authorizePost = asyncHandler(async (req, res) => {
+    prepareAuthorizationBrowserResponse(res);
     const request = await parseAuthorizationRequest(req.body, resource, options.pool);
     const client = await resolveOAuthClient(options.pool, request.clientId);
 
@@ -179,6 +182,7 @@ export function createOAuthSupport(options: OAuthSupportOptions): OAuthSupport {
       issuer,
       authorizationCodeTtlSeconds,
       res,
+      client,
     );
   });
 
@@ -508,6 +512,7 @@ async function issueAuthorizationCodeAndRedirect(
   issuer: string,
   ttlSeconds: number,
   res: ExpressResponse,
+  client: OAuthClient,
 ): Promise<void> {
   const code = `exa_code_${randomToken(32)}`;
   await pool.query(
@@ -530,6 +535,7 @@ async function issueAuthorizationCodeAndRedirect(
   redirect.searchParams.set('code', code);
   if (request.state) redirect.searchParams.set('state', request.state);
   redirect.searchParams.set('iss', issuer);
+  logOAuthHandoff('authorization_redirect', request, client, true);
   res.redirect(302, redirect.toString());
 }
 
@@ -1167,7 +1173,7 @@ function setSessionCookie(
   const value = signAuthorizationSession(secret, ttlSeconds);
   res.set(
     'Set-Cookie',
-    `${AUTH_SESSION_COOKIE}=${value}; Path=/oauth; Max-Age=${ttlSeconds}; HttpOnly; Secure; SameSite=Lax`,
+    `${AUTH_SESSION_COOKIE}=${value}; Path=/; Max-Age=${ttlSeconds}; HttpOnly; Secure; SameSite=Lax`,
   );
 }
 
@@ -1204,33 +1210,334 @@ function renderAuthorizationPage(
     .filter(([, value]) => value !== undefined)
     .map(
       ([name, value]) =>
-        `<input type="hidden" name="${htmlEscape(name)}" value="${htmlEscape(value!)}">`,
+        \`<input type="hidden" name="\${htmlEscape(name)}" value="\${htmlEscape(value!)}">\`,
     )
     .join('');
 
-  return `<!doctype html>
+  const displayClient = htmlEscape(clientName ?? clientDisplayName(request.clientId));
+  const actionTitle = authenticated
+    ? \`Authorize \${displayClient}\`
+    : 'Connect Excalimate';
+  const buttonLabel = authenticated
+    ? \`Authorize \${displayClient}\`
+    : 'Continue securely';
+
+  return \`<!doctype html>
 <html lang="en">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>Authorize Excalimate</title>
+<meta name="color-scheme" content="light dark">
+<title>\${actionTitle}</title>
+<style>
+  :root {
+    color-scheme: light;
+    --bg: #f7f7f5;
+    --card: rgba(255,255,255,.96);
+    --text: #141414;
+    --muted: #686868;
+    --line: #e8e8e4;
+    --soft: #f5f5f2;
+    --button: #171717;
+    --buttonText: #fff;
+    --dangerBg: #fff2f1;
+    --danger: #b42318;
+    --success: #147a4a;
+    --shadow: 0 24px 70px rgba(0,0,0,.09), 0 3px 12px rgba(0,0,0,.04);
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      color-scheme: dark;
+      --bg: #111;
+      --card: rgba(25,25,25,.98);
+      --text: #f6f6f4;
+      --muted: #a8a8a2;
+      --line: #33332f;
+      --soft: #22221f;
+      --button: #f3f3ef;
+      --buttonText: #161616;
+      --dangerBg: #351d1b;
+      --danger: #ff9a90;
+      --success: #73d9a7;
+      --shadow: 0 28px 80px rgba(0,0,0,.38);
+    }
+  }
+  * { box-sizing: border-box; }
+  html, body { min-height: 100%; }
+  body {
+    margin: 0;
+    min-height: 100vh;
+    display: grid;
+    place-items: center;
+    background:
+      radial-gradient(circle at 50% -20%, rgba(120,120,110,.10), transparent 42%),
+      var(--bg);
+    color: var(--text);
+    font-family: Inter, ui-sans-serif, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    -webkit-font-smoothing: antialiased;
+    padding: 28px 18px;
+  }
+  .shell { width: min(100%, 440px); }
+  .brand {
+    display: flex;
+    justify-content: center;
+    align-items: center;
+    gap: 10px;
+    margin-bottom: 20px;
+    font-weight: 700;
+    letter-spacing: -.025em;
+    font-size: 17px;
+  }
+  .mark {
+    width: 30px;
+    height: 30px;
+    display: grid;
+    place-items: center;
+    border-radius: 9px;
+    background: var(--text);
+    color: var(--card);
+  }
+  .card {
+    background: var(--card);
+    border: 1px solid var(--line);
+    border-radius: 22px;
+    box-shadow: var(--shadow);
+    padding: 30px;
+  }
+  h1 {
+    margin: 0 0 9px;
+    text-align: center;
+    font-size: 25px;
+    line-height: 1.18;
+    letter-spacing: -.035em;
+  }
+  .lead {
+    margin: 0 auto 24px;
+    max-width: 340px;
+    text-align: center;
+    color: var(--muted);
+    font-size: 14px;
+    line-height: 1.55;
+  }
+  .client {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    padding: 13px 14px;
+    background: var(--soft);
+    border: 1px solid var(--line);
+    border-radius: 14px;
+    margin-bottom: 14px;
+  }
+  .clientIcon {
+    width: 34px;
+    height: 34px;
+    flex: 0 0 34px;
+    border-radius: 10px;
+    display: grid;
+    place-items: center;
+    background: var(--text);
+    color: var(--card);
+    font-size: 15px;
+    font-weight: 800;
+  }
+  .clientText { min-width: 0; }
+  .clientName {
+    font-size: 14px;
+    font-weight: 650;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .clientSub {
+    margin-top: 2px;
+    color: var(--muted);
+    font-size: 12px;
+  }
+  .permissions {
+    margin: 0 0 22px;
+    padding: 0;
+    list-style: none;
+    border: 1px solid var(--line);
+    border-radius: 14px;
+    overflow: hidden;
+  }
+  .permissions li {
+    display: flex;
+    gap: 10px;
+    align-items: flex-start;
+    padding: 11px 13px;
+    font-size: 13px;
+    line-height: 1.38;
+  }
+  .permissions li + li { border-top: 1px solid var(--line); }
+  .check {
+    margin-top: 1px;
+    color: var(--success);
+    font-weight: 800;
+  }
+  label {
+    display: block;
+    margin: 0 0 8px;
+    font-size: 12px;
+    font-weight: 650;
+  }
+  input[type=password] {
+    display: block;
+    width: 100%;
+    height: 46px;
+    margin-top: 7px;
+    border: 1px solid var(--line);
+    border-radius: 12px;
+    padding: 0 13px;
+    background: var(--card);
+    color: var(--text);
+    font: inherit;
+    outline: none;
+    transition: border-color .15s ease, box-shadow .15s ease;
+  }
+  input[type=password]:focus {
+    border-color: #92928b;
+    box-shadow: 0 0 0 3px rgba(120,120,110,.12);
+  }
+  .error {
+    margin: 0 0 14px;
+    padding: 10px 12px;
+    border-radius: 11px;
+    background: var(--dangerBg);
+    color: var(--danger);
+    font-size: 12px;
+    line-height: 1.45;
+  }
+  .signed {
+    margin: 0 0 14px;
+    color: var(--success);
+    text-align: center;
+    font-size: 12px;
+    font-weight: 650;
+  }
+  button {
+    width: 100%;
+    min-height: 46px;
+    border: 0;
+    border-radius: 12px;
+    padding: 0 16px;
+    background: var(--button);
+    color: var(--buttonText);
+    font: inherit;
+    font-size: 14px;
+    font-weight: 680;
+    cursor: pointer;
+    transition: transform .08s ease, opacity .15s ease;
+  }
+  button:hover { opacity: .92; }
+  button:active { transform: translateY(1px); }
+  .foot {
+    margin: 17px 2px 0;
+    color: var(--muted);
+    text-align: center;
+    font-size: 11px;
+    line-height: 1.5;
+  }
+  .lock { vertical-align: -1px; }
+</style>
 </head>
 <body>
-<main>
-<h1>Authorize Excalimate MCP</h1>
-<p>Client: <strong>${htmlEscape(clientName ?? request.clientId)}</strong></p>
-<p>This grants access to create temporary animation projects, edit scenes, and render videos through Excalimate.</p>
-${invalidPassword ? '<p role="alert">Invalid authorization password.</p>' : ''}
-<form method="post" action="/oauth/authorize">
-${hidden}
-${authenticated
-  ? '<p>You are signed in to Excalimate authorization.</p>'
-  : '<label>Excalimate authorization password<input type="password" name="password" autocomplete="current-password" required autofocus></label>'}
-<button type="submit">Authorize</button>
-</form>
-</main>
+<div class="shell">
+  <div class="brand">
+    <span class="mark" aria-hidden="true">
+      <svg width="18" height="18" viewBox="0 0 24 24" fill="none">
+        <path d="M13.8 2.8 6.9 13h4.7l-1.4 8.2L17.1 11h-4.7l1.4-8.2Z" fill="currentColor"/>
+      </svg>
+    </span>
+    <span>Excalimate</span>
+  </div>
+  <main class="card">
+    <h1>\${actionTitle}</h1>
+    <p class="lead">Allow \${displayClient} to use Excalimate's animation tools on your behalf.</p>
+
+    <div class="client">
+      <div class="clientIcon" aria-hidden="true">\${displayClient.charAt(0).toUpperCase()}</div>
+      <div class="clientText">
+        <div class="clientName">\${displayClient}</div>
+        <div class="clientSub">OAuth 2.1 · PKCE secured</div>
+      </div>
+    </div>
+
+    <ul class="permissions" aria-label="Requested permissions">
+      <li><span class="check">✓</span><span>Create and edit temporary animation projects</span></li>
+      <li><span class="check">✓</span><span>Build scenes, timelines, camera moves, and visual effects</span></li>
+      <li><span class="check">✓</span><span>Render completed animations and retrieve temporary video links</span></li>
+    </ul>
+
+    \${invalidPassword ? '<p class="error" role="alert">That authorization password is not correct. Please try again.</p>' : ''}
+    \${authenticated ? '<p class="signed">✓ Excalimate authorization verified</p>' : ''}
+
+    <form method="post" action="/oauth/authorize">
+      \${hidden}
+      \${authenticated
+        ? ''
+        : '<label>Authorization password<input type="password" name="password" autocomplete="current-password" required autofocus></label>'}
+      <button type="submit">\${buttonLabel}</button>
+    </form>
+
+    <p class="foot">
+      <span class="lock">🔒</span>
+      Secured by OAuth 2.1 + PKCE. After authorization, this window should return you to \${displayClient} automatically.
+    </p>
+  </main>
+</div>
 </body>
-</html>`;
+</html>\`;
+}
+
+export function prepareAuthorizationBrowserResponse(
+  res: Pick<ExpressResponse, 'set'>,
+): void {
+  // OAuth popup handoffs need to preserve the opener relationship across
+  // origins. Helmet's default COOP "same-origin" deliberately severs it.
+  res.set('Cross-Origin-Opener-Policy', 'unsafe-none');
+  res.set('Cache-Control', 'no-store, max-age=0');
+  res.set('Pragma', 'no-cache');
+}
+
+function clientDisplayName(clientId: string): string {
+  try {
+    const url = new URL(clientId);
+    if (url.hostname === 'chatgpt.com') return 'ChatGPT';
+    return url.hostname;
+  } catch {
+    return 'Connected app';
+  }
+}
+
+function logOAuthHandoff(
+  event: 'authorize_page' | 'authorization_redirect',
+  request: AuthorizationRequest,
+  client: OAuthClient,
+  authenticated: boolean,
+): void {
+  const redirect = new URL(request.redirectUri);
+  let clientKind = 'registered';
+  let clientHost: string | undefined;
+  if (request.clientId.startsWith('https://')) {
+    clientKind = 'cimd';
+    try {
+      clientHost = new URL(request.clientId).hostname;
+    } catch {
+      clientHost = undefined;
+    }
+  }
+
+  console.info('[excalimate-oauth]', {
+    event,
+    clientKind,
+    clientHost,
+    clientName: client.clientName ?? null,
+    redirectHost: redirect.hostname,
+    redirectPath: redirect.pathname,
+    authenticated,
+  });
 }
 
 function htmlEscape(value: string): string {
