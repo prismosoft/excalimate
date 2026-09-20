@@ -361,12 +361,15 @@ async function ensureBrowser(): Promise<Browser> {
     return browser;
   }
 
+  const rendererOrigin = new URL(RENDERER_URL).origin;
   browser = await chromium.launch({
     headless: true,
     args: [
       '--disable-dev-shm-usage',
       '--no-sandbox',
       '--disable-background-networking',
+      '--enable-features=WebCodecs',
+      `--unsafely-treat-insecure-origin-as-secure=${rendererOrigin}`,
     ],
   });
 
