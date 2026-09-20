@@ -363,6 +363,10 @@ async function ensureBrowser(): Promise<Browser> {
 
   const rendererOrigin = new URL(RENDERER_URL).origin;
   browser = await chromium.launch({
+    // Playwright defaults to the smaller Chromium headless-shell binary,
+    // which does not expose WebCodecs VideoEncoder. The full bundled
+    // Chromium channel uses new headless mode and supports the exporter.
+    channel: 'chromium',
     headless: true,
     args: [
       '--disable-dev-shm-usage',
