@@ -130,8 +130,8 @@ export function createOAuthSupport(options: OAuthSupportOptions): OAuthSupport {
   });
 
   const authorizeGet = asyncHandler(async (req, res) => {
-    prepareAuthorizationBrowserResponse(res);
     const request = await parseAuthorizationRequest(req.query, resource, options.pool);
+    prepareAuthorizationBrowserResponse(res, request.redirectUri);
     const client = await resolveOAuthClient(options.pool, request.clientId);
     const authenticated = hasValidSession(req, options.sessionSecret);
     logOAuthHandoff('authorize_page', request, client, authenticated);
@@ -149,8 +149,8 @@ export function createOAuthSupport(options: OAuthSupportOptions): OAuthSupport {
   });
 
   const authorizePost = asyncHandler(async (req, res) => {
-    prepareAuthorizationBrowserResponse(res);
     const request = await parseAuthorizationRequest(req.body, resource, options.pool);
+    prepareAuthorizationBrowserResponse(res, request.redirectUri);
     const client = await resolveOAuthClient(options.pool, request.clientId);
 
     if (!hasValidSession(req, options.sessionSecret)) {
@@ -1493,12 +1493,29 @@ function renderAuthorizationPage(
 
 export function prepareAuthorizationBrowserResponse(
   res: Pick<ExpressResponse, 'set'>,
+  redirectUri: string,
 ): void {
   // OAuth popup handoffs need to preserve the opener relationship across
   // origins. Helmet's default COOP "same-origin" deliberately severs it.
   res.set('Cross-Origin-Opener-Policy', 'unsafe-none');
   res.set('Cache-Control', 'no-store, max-age=0');
   res.set('Pragma', 'no-cache');
+
+  // Helmet's default CSP uses form-action 'self'. That blocks the final
+  // OAuth form POST from following a 302 to a different origin (e.g.
+  // ChatGPT's callback). The redirect URI is already validated against the
+  // client's registered metadata, so allow only its exact origin.
+  const redirectOrigin = new URL(redirectUri).origin;
+  const csp = [
+    "default-src 'none'",
+    "base-uri 'none'",
+    "frame-ancestors 'none'",
+    "form-action 'self' " + redirectOrigin,
+    "style-src 'unsafe-inline'",
+    "img-src 'self' data: https:",
+    "font-src 'self' https: data:",
+  ].join('; ');
+  res.set('Content-Security-Policy', csp);
 }
 
 function clientDisplayName(clientId: string): string {
