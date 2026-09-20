@@ -4,6 +4,8 @@ import { readFile } from 'node:fs/promises';
 import { request as httpRequest } from 'node:http';
 import { setTimeout as delay } from 'node:timers/promises';
 import test from 'node:test';
+import { generateKeyBetween } from 'fractional-indexing';
+import { normalizeElements } from '../src/server/elementNormalizer.js';
 import { z } from 'zod';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { InMemoryTransport } from '@modelcontextprotocol/sdk/inMemory.js';
@@ -1401,4 +1403,17 @@ test('scoped state adapter isolates projects and requires projectId', async () =
     await client.close();
     await server.close();
   }
+});
+
+
+test('large MCP scenes receive valid ordered Excalidraw fractional indices', () => {
+  const first = normalizeElements(Array.from({ length: 150 }, (_, i) => ({
+    id: `element-${i}`, type: 'rectangle', x: i, y: 0, width: 10, height: 10,
+  })));
+  const appended = normalizeElements([{ id: 'appended', type: 'ellipse' }]);
+  const indices = [...first, ...appended].map((element) => element.index);
+  for (const index of indices) assert.doesNotThrow(() => generateKeyBetween(index, null));
+  assert.deepEqual(indices, [...indices].sort());
+  assert.equal(new Set(indices).size, indices.length);
+  assert.equal(normalizeElements([{ id: 'explicit', index: 'b00' }])[0].index, 'b00');
 });

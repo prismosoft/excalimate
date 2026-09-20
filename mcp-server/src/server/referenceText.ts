@@ -16,6 +16,7 @@ Managed actions never silently replace customized or unmanaged keyframes. Low-le
 
 ## Element format
 Base: { id, type, x, y, width, height, strokeColor, backgroundColor, fillStyle, strokeWidth, opacity, groupIds, angle }
+Use unique element IDs with letters, digits, underscores, and hyphens (1–256 characters) for renderer compatibility. Omit index to generate valid Excalidraw fractional order keys.
 Types: rectangle, ellipse, diamond, arrow, line, text, freedraw, image
 Text: { text, fontSize, fontFamily: 5, textAlign, verticalAlign }
 Arrow/line: { points: [[0,0],[dx,dy]], endArrowhead: "arrow"|null }
@@ -28,6 +29,8 @@ Statuses: managed, customized, disabled, detached
 
 ## Low-level animation
 Properties: opacity, translateX, translateY, scaleX, scaleY, rotation, drawProgress
+Animation opacity and drawProgress use 0–1, unlike base element opacity (0–100). Translation is an offset in scene units; scale 1 is the original size.
+Use one low-level opacity track for fade-in, hold, and fade-out: multiple managed actions cannot own the same target/property. Adding keyframes appends them; remove existing keys before revising values at the same timestamp.
 Easings: linear, easeIn, easeOut, easeInOut, easeInQuad, easeOutQuad, easeInOutQuad,
 easeInCubic, easeOutCubic, easeInOutCubic, easeInBack, easeOutBack, easeInOutBack,
 easeInElastic, easeOutElastic, easeInBounce, easeOutBounce, step

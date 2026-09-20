@@ -1,9 +1,13 @@
 /* eslint-disable @typescript-eslint/no-explicit-any */
 
-let _elementIndexCounter = 0;
+import { generateKeyBetween } from 'fractional-indexing';
+
+let lastGeneratedIndex: string | null = null;
 
 export function normalizeElement(el: any): any {
-  const index = el.index ?? `a${_elementIndexCounter++}`;
+  // Excalidraw requires fractional order keys; decimal keys such as a10 are invalid.
+  const index = el.index ?? generateKeyBetween(lastGeneratedIndex, null);
+  if (el.index == null) lastGeneratedIndex = index;
 
   return {
     angle: 0,
