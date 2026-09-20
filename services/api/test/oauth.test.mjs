@@ -171,7 +171,33 @@ test('OAuth authorization page disables COOP isolation for popup handoff', () =>
     },
   };
 
-  prepareAuthorizationBrowserResponse(fakeResponse);
+  prepareAuthorizationBrowserResponse(
+    fakeResponse,
+    'https://chatgpt.com/connector_platform_oauth_redirect',
+  );
   assert.equal(headers.get('cross-origin-opener-policy'), 'unsafe-none');
   assert.equal(headers.get('cache-control'), 'no-store, max-age=0');
+  assert.equal(
+    headers.get('content-security-policy'),
+    "default-src 'none'; base-uri 'none'; frame-ancestors 'none'; form-action 'self' https://chatgpt.com; style-src 'unsafe-inline'; img-src 'self' data: https:; font-src 'self' https: data:",
+  );
+});
+
+
+test('OAuth CSP allows only the validated callback origin', () => {
+  const headers = new Map();
+  const fakeResponse = {
+    set(name, value) {
+      headers.set(name.toLowerCase(), value);
+      return this;
+    },
+  };
+
+  prepareAuthorizationBrowserResponse(
+    fakeResponse,
+    'http://127.0.0.1:45678/callback',
+  );
+  const csp = headers.get('content-security-policy');
+  assert.match(csp, /form-action 'self' http:\/\/127\.0\.0\.1:45678/);
+  assert.doesNotMatch(csp, /form-action[^;]*https:/);
 });
