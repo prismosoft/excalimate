@@ -5,6 +5,7 @@ import express from 'express';
 import {
   createOAuthSupport,
   normalizeScope,
+  prepareAuthorizationBrowserResponse,
   signAuthorizationSession,
   validateRedirectUri,
   verifyAuthorizationPassword,
@@ -158,4 +159,19 @@ test('authorization password prefers SHA-256 hash and supports legacy fallback',
   assert.throws(() =>
     verifyAuthorizationPassword(password, 'not-a-valid-hash', password),
   );
+});
+
+
+test('OAuth authorization page disables COOP isolation for popup handoff', () => {
+  const headers = new Map();
+  const fakeResponse = {
+    set(name, value) {
+      headers.set(name.toLowerCase(), value);
+      return this;
+    },
+  };
+
+  prepareAuthorizationBrowserResponse(fakeResponse);
+  assert.equal(headers.get('cross-origin-opener-policy'), 'unsafe-none');
+  assert.equal(headers.get('cache-control'), 'no-store, max-age=0');
 });
