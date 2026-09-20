@@ -4,10 +4,15 @@ import './index.css';
 import { App } from './components/App/App';
 import { initializeAnalyticsFromConsent } from './services/analytics/posthog';
 
-initializeAnalyticsFromConsent();
+const root = document.getElementById('root');
 
-createRoot(document.getElementById('root')!).render(
-  <StrictMode>
-    <App />
-  </StrictMode>,
-);
+// Vite may place this entry module in a shared chunk used by render.html.
+// The headless renderer intentionally has no interactive application root.
+if (root) {
+  initializeAnalyticsFromConsent();
+  createRoot(root).render(
+    <StrictMode>
+      <App />
+    </StrictMode>,
+  );
+}
