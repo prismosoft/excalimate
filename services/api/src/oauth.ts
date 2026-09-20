@@ -1210,25 +1210,25 @@ function renderAuthorizationPage(
     .filter(([, value]) => value !== undefined)
     .map(
       ([name, value]) =>
-        \`<input type="hidden" name="\${htmlEscape(name)}" value="\${htmlEscape(value!)}">\`,
+        `<input type="hidden" name="${htmlEscape(name)}" value="${htmlEscape(value!)}">`,
     )
     .join('');
 
   const displayClient = htmlEscape(clientName ?? clientDisplayName(request.clientId));
   const actionTitle = authenticated
-    ? \`Authorize \${displayClient}\`
+    ? `Authorize ${displayClient}`
     : 'Connect Excalimate';
   const buttonLabel = authenticated
-    ? \`Authorize \${displayClient}\`
+    ? `Authorize ${displayClient}`
     : 'Continue securely';
 
-  return \`<!doctype html>
+  return `<!doctype html>
 <html lang="en">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <meta name="color-scheme" content="light dark">
-<title>\${actionTitle}</title>
+<title>${actionTitle}</title>
 <style>
   :root {
     color-scheme: light;
@@ -1453,13 +1453,13 @@ function renderAuthorizationPage(
     <span>Excalimate</span>
   </div>
   <main class="card">
-    <h1>\${actionTitle}</h1>
-    <p class="lead">Allow \${displayClient} to use Excalimate's animation tools on your behalf.</p>
+    <h1>${actionTitle}</h1>
+    <p class="lead">Allow ${displayClient} to use Excalimate's animation tools on your behalf.</p>
 
     <div class="client">
-      <div class="clientIcon" aria-hidden="true">\${displayClient.charAt(0).toUpperCase()}</div>
+      <div class="clientIcon" aria-hidden="true">${displayClient.charAt(0).toUpperCase()}</div>
       <div class="clientText">
-        <div class="clientName">\${displayClient}</div>
+        <div class="clientName">${displayClient}</div>
         <div class="clientSub">OAuth 2.1 · PKCE secured</div>
       </div>
     </div>
@@ -1470,25 +1470,25 @@ function renderAuthorizationPage(
       <li><span class="check">✓</span><span>Render completed animations and retrieve temporary video links</span></li>
     </ul>
 
-    \${invalidPassword ? '<p class="error" role="alert">That authorization password is not correct. Please try again.</p>' : ''}
-    \${authenticated ? '<p class="signed">✓ Excalimate authorization verified</p>' : ''}
+    ${invalidPassword ? '<p class="error" role="alert">That authorization password is not correct. Please try again.</p>' : ''}
+    ${authenticated ? '<p class="signed">✓ Excalimate authorization verified</p>' : ''}
 
     <form method="post" action="/oauth/authorize">
-      \${hidden}
-      \${authenticated
+      ${hidden}
+      ${authenticated
         ? ''
         : '<label>Authorization password<input type="password" name="password" autocomplete="current-password" required autofocus></label>'}
-      <button type="submit">\${buttonLabel}</button>
+      <button type="submit">${buttonLabel}</button>
     </form>
 
     <p class="foot">
       <span class="lock">🔒</span>
-      Secured by OAuth 2.1 + PKCE. After authorization, this window should return you to \${displayClient} automatically.
+      Secured by OAuth 2.1 + PKCE. After authorization, this window should return you to ${displayClient} automatically.
     </p>
   </main>
 </div>
 </body>
-</html>\`;
+</html>`;
 }
 
 export function prepareAuthorizationBrowserResponse(
