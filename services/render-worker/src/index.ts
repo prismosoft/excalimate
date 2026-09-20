@@ -8,6 +8,7 @@ import { PgBoss } from 'pg-boss';
 import { chromium, type Browser } from 'playwright';
 import { S3Client } from '@aws-sdk/client-s3';
 import { Upload } from '@aws-sdk/lib-storage';
+import { capturePromiseOutcome } from './promise-outcome.js';
 
 const DATABASE_URL = requiredEnv('DATABASE_URL');
 const RENDERER_URL = requiredEnv('RENDERER_URL');
@@ -235,9 +236,28 @@ async function browserExport(
 
   try {
     const page = await context.newPage();
+    const browserMessages: string[] = [];
+    const rememberBrowserMessage = (message: string): void => {
+      browserMessages.push(message);
+      if (browserMessages.length > 20) browserMessages.shift();
+    };
+
+    page.on('console', (message) => {
+      if (message.type() === 'error' || message.type() === 'warning') {
+        rememberBrowserMessage(`console.${message.type()}: ${message.text()}`);
+      }
+    });
+    page.on('pageerror', (error) => {
+      rememberBrowserMessage(`pageerror: ${error.message}`);
+    });
+    page.on('crash', () => {
+      rememberBrowserMessage('page crashed');
+    });
+
     page.setDefaultTimeout(Math.min(RENDER_TIMEOUT_MS, 120_000));
     page.setDefaultNavigationTimeout(120_000);
 
+    console.log(`[render] opening renderer ${RENDERER_URL}`);
     await page.goto(RENDERER_URL, {
       waitUntil: 'networkidle',
       timeout: 120_000,
@@ -254,42 +274,67 @@ async function browserExport(
       { timeout: 120_000 },
     );
 
-    const downloadPromise = page.waitForEvent('download', {
-      timeout: RENDER_TIMEOUT_MS,
-    });
-
-    await page.evaluate(
-      async ({ project, renderOptions }) => {
-        const renderer = (
-          window as unknown as {
-            excalimateRenderer: {
-              render: (
-                project: unknown,
-                options: {
-                  format: 'mp4' | 'webm';
-                  fps?: number;
-                  quality?: 'low' | 'medium' | 'high' | 'very-high';
-                  theme?: 'light' | 'dark';
-                },
-              ) => Promise<{ ok: true }>;
-            };
-          }
-        ).excalimateRenderer;
-
-        await renderer.render(project, renderOptions);
-      },
-      {
-        project: document,
-        renderOptions: {
-          format,
-          fps: options.fps ?? 30,
-          quality: options.quality ?? 'high',
-          theme: options.theme ?? 'light',
-        },
-      },
+    // Attach a rejection handler immediately. If renderer.render() throws,
+    // the finally block closes the context and Playwright rejects the pending
+    // download event. A bare promise here becomes an unhandled rejection and
+    // terminates Node before the job can be marked failed or use its fallback.
+    const downloadOutcome = capturePromiseOutcome(
+      page.waitForEvent('download', {
+        timeout: RENDER_TIMEOUT_MS,
+      }),
     );
 
-    const download = await downloadPromise;
+    try {
+      await page.evaluate(
+        async ({ project, renderOptions }) => {
+          const renderer = (
+            window as unknown as {
+              excalimateRenderer: {
+                render: (
+                  project: unknown,
+                  options: {
+                    format: 'mp4' | 'webm';
+                    fps?: number;
+                    quality?: 'low' | 'medium' | 'high' | 'very-high';
+                    theme?: 'light' | 'dark';
+                  },
+                ) => Promise<{ ok: true }>;
+              };
+            }
+          ).excalimateRenderer;
+
+          await renderer.render(project, renderOptions);
+        },
+        {
+          project: document,
+          renderOptions: {
+            format,
+            fps: options.fps ?? 30,
+            quality: options.quality ?? 'high',
+            theme: options.theme ?? 'light',
+          },
+        },
+      );
+    } catch (error) {
+      const detail = browserMessages.join(' | ');
+      throw new Error(
+        `renderer_evaluate_failed: ${errorMessage(error)}` +
+          (detail ? `; browser: ${detail}` : ''),
+        { cause: error },
+      );
+    }
+
+    const outcome = await downloadOutcome;
+    if (!outcome.ok) {
+      const detail = browserMessages.join(' | ');
+      throw new Error(
+        `renderer_download_failed: ${errorMessage(outcome.error)}` +
+          (detail ? `; browser: ${detail}` : ''),
+        { cause: outcome.error },
+      );
+    }
+
+    const download = outcome.value;
     await download.saveAs(outputPath);
 
     const failure = await download.failure();
@@ -305,6 +350,10 @@ async function browserExport(
     clearTimeout(timeout);
     await context.close().catch(() => undefined);
   }
+}
+
+function errorMessage(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
 }
 
 async function ensureBrowser(): Promise<Browser> {
